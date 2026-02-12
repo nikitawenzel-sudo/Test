@@ -1,96 +1,128 @@
-import * as secp256k1 from '@noble/secp256k1';
-import { sha256 } from '@noble/hashes/sha256';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+// crypto.js - NOSTR Key Management & Event Signing
+// Depends on: noble-secp256k1 and noble-hashes loaded globally
 
-const STORAGE_KEY = 'nostr-discord-keypair';
+const NostrCrypto = (() => {
+  // Use noble libraries from global scope
+  function getSecp() {
+    return window.nobleSecp256k1;
+  }
 
-function generatePrivateKey() {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  return bytesToHex(bytes);
-}
+  function getHashes() {
+    return window.nobleHashes;
+  }
 
-export function getPublicKeyHex(privateKey) {
-  const pubkeyBytes = secp256k1.schnorr.getPublicKey(privateKey);
-  return bytesToHex(pubkeyBytes);
-}
+  function bytesToHex(bytes) {
+    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
 
-export function generateKeyPair() {
-  const privateKey = generatePrivateKey();
-  const publicKey = getPublicKeyHex(privateKey);
-  return { privateKey, publicKey };
-}
+  function hexToBytes(hex) {
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < hex.length; i += 2) {
+      bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+    }
+    return bytes;
+  }
 
-export function loadOrCreateKeyPair() {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored) {
+  function generatePrivateKey() {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    return bytesToHex(bytes);
+  }
+
+  function getPublicKey(privateKey) {
+    const secp = getSecp();
+    const pubkeyBytes = secp.getPublicKey(privateKey, true); // compressed
+    // For NOSTR, we use x-only pubkey (32 bytes, no prefix)
+    return bytesToHex(pubkeyBytes.slice(1));
+  }
+
+  function loadOrCreateKeyPair() {
+    let privateKey = localStorage.getItem('nostr_privkey');
+    if (!privateKey) {
+      privateKey = generatePrivateKey();
+      localStorage.setItem('nostr_privkey', privateKey);
+    }
+    const publicKey = getPublicKey(privateKey);
+    localStorage.setItem('nostr_pubkey', publicKey);
+    return { privateKey, publicKey };
+  }
+
+  function serializeEvent(event) {
+    return JSON.stringify([
+      0,
+      event.pubkey,
+      event.created_at,
+      event.kind,
+      event.tags,
+      event.content
+    ]);
+  }
+
+  async function computeEventId(event) {
+    const serialized = serializeEvent(event);
+    const encoder = new TextEncoder();
+    const data = encoder.encode(serialized);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    return bytesToHex(new Uint8Array(hashBuffer));
+  }
+
+  async function signEvent(eventTemplate, privateKey) {
+    const pubkey = getPublicKey(privateKey);
+    const event = {
+      ...eventTemplate,
+      pubkey: pubkey,
+      created_at: eventTemplate.created_at || Math.floor(Date.now() / 1000),
+    };
+
+    event.id = await computeEventId(event);
+
+    const secp = getSecp();
+    const sigBytes = await secp.schnorr.sign(hexToBytes(event.id), privateKey);
+    event.sig = bytesToHex(sigBytes);
+
+    return event;
+  }
+
+  async function verifyEvent(event) {
     try {
-      const kp = JSON.parse(stored);
-      if (kp.privateKey && kp.publicKey) {
-        return kp;
-      }
-    } catch {
-      // corrupt data, regenerate
+      const id = await computeEventId(event);
+      if (id !== event.id) return false;
+
+      const secp = getSecp();
+      return await secp.schnorr.verify(
+        hexToBytes(event.sig),
+        hexToBytes(event.id),
+        hexToBytes(event.pubkey)
+      );
+    } catch (e) {
+      console.error('Verify error:', e);
+      return false;
     }
   }
 
-  const kp = generateKeyPair();
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(kp));
-  return kp;
-}
-
-export function saveKeyPair(keyPair) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(keyPair));
-}
-
-export function computeEventId(event) {
-  const serialized = JSON.stringify([
-    0,
-    event.pubkey,
-    event.created_at,
-    event.kind,
-    event.tags,
-    event.content
-  ]);
-  const hash = sha256(new TextEncoder().encode(serialized));
-  return bytesToHex(hash);
-}
-
-export async function signEvent(event, privateKey) {
-  const id = computeEventId(event);
-  const sig = bytesToHex(secp256k1.schnorr.sign(hexToBytes(id), privateKey));
-  return {
-    ...event,
-    id,
-    sig
-  };
-}
-
-export async function verifyEvent(event) {
-  try {
-    const expectedId = computeEventId(event);
-    if (event.id !== expectedId) return false;
-
-    return secp256k1.schnorr.verify(
-      hexToBytes(event.sig),
-      hexToBytes(event.id),
-      hexToBytes(event.pubkey)
-    );
-  } catch {
-    return false;
+  // Nickname management
+  function setNickname(name) {
+    localStorage.setItem('nostr_nickname', name);
   }
-}
 
-export function createUnsignedEvent(kind, content, tags, pubkey) {
+  function getNickname() {
+    return localStorage.getItem('nostr_nickname') || null;
+  }
+
+  function shortenPubkey(pubkey) {
+    return pubkey.slice(0, 8) + '...' + pubkey.slice(-4);
+  }
+
   return {
-    pubkey,
-    created_at: Math.floor(Date.now() / 1000),
-    kind,
-    tags,
-    content
+    generatePrivateKey,
+    getPublicKey,
+    loadOrCreateKeyPair,
+    signEvent,
+    verifyEvent,
+    setNickname,
+    getNickname,
+    shortenPubkey,
+    bytesToHex,
+    hexToBytes
   };
-}
-
-export function shortenPubkey(pubkey) {
-  return pubkey.substring(0, 8) + '...' + pubkey.substring(pubkey.length - 4);
-}
+})();

@@ -1,236 +1,284 @@
-import { createUnsignedEvent, signEvent } from './crypto.js';
+// screenshare.js - WebRTC Screen Sharing
 
-const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' }
-];
+const NostrScreenShare = (() => {
+  let screenStream = null;
+  let screenPeers = new Map(); // pubkey -> RTCPeerConnection (separate connections for screen)
+  let keyPair = null;
+  let isSharing = false;
+  let currentSharerPubkey = null;
 
-export class ScreenShare {
-  constructor(relay, keyPair, voiceChat) {
-    this.relay = relay;
-    this.keyPair = keyPair;
-    this.voiceChat = voiceChat;
-    this.screenStream = null;
-    this.screenPeers = new Map(); // pubkey → RTCPeerConnection (separate from voice)
-    this.sharing = false;
-    this.onScreenStreamReceived = null; // callback(pubkey, stream)
-    this.onScreenShareStopped = null;  // callback(pubkey)
+  const ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ];
 
-    // Link to voice chat for signaling
-    this.voiceChat.screenShare = this;
+  function init(keys) {
+    keyPair = keys;
+
+    // Listen for screen share signaling
+    NostrRelay.subscribe(
+      { kinds: [25000], '#p': [keyPair.publicKey] },
+      handleScreenSignaling
+    );
+
+    // Listen for screen share announcements
+    NostrRelay.subscribe(
+      { kinds: [25000], '#screen-share-start': ['true'] },
+      (event) => {
+        if (event.pubkey === keyPair.publicKey) return;
+        currentSharerPubkey = event.pubkey;
+        updateScreenUI();
+      }
+    );
+
+    NostrRelay.subscribe(
+      { kinds: [25000], '#screen-share-stop': ['true'] },
+      (event) => {
+        if (event.pubkey === currentSharerPubkey) {
+          currentSharerPubkey = null;
+          removeScreenView();
+          updateScreenUI();
+        }
+      }
+    );
   }
 
-  async startSharing() {
-    if (this.sharing) return;
-
+  async function startSharing() {
     try {
-      this.screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
+      screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { cursor: 'always' },
         audio: true
       });
-    } catch (err) {
-      console.log('Screen share cancelled or failed:', err.message);
-      return;
-    }
 
-    this.sharing = true;
+      isSharing = true;
 
-    // Handle user stopping share via browser UI
-    this.screenStream.getVideoTracks()[0].onended = () => {
-      this.stopSharing();
-    };
+      // Track when user stops sharing via browser UI
+      screenStream.getVideoTracks()[0].onended = () => {
+        stopSharing();
+      };
 
-    // Announce screen share start
-    const event = createUnsignedEvent(
-      25000,
-      JSON.stringify({ type: 'screen-share-start', channel: this.voiceChat.currentChannel }),
-      [['screen-share-start', this.voiceChat.currentChannel]],
-      this.keyPair.publicKey
-    );
-    const signed = await signEvent(event, this.keyPair.privateKey);
-    this.relay.publish(signed);
+      // Announce screen share
+      const event = await NostrCrypto.signEvent({
+        kind: 25000,
+        content: JSON.stringify({ type: 'screen-share-start' }),
+        tags: [['screen-share-start', 'true']],
+        created_at: Math.floor(Date.now() / 1000)
+      }, keyPair.privateKey);
+      NostrRelay.publish(event);
 
-    // Create screen share connections to all voice peers
-    for (const pubkey of this.voiceChat.voiceUsers) {
-      if (pubkey === this.keyPair.publicKey) continue;
-      await this._createScreenOffer(pubkey);
-    }
-  }
+      // Create peer connections for all voice users
+      const voiceUsers = NostrVoice.getVoiceUsers();
+      for (const pubkey of voiceUsers) {
+        if (pubkey === keyPair.publicKey) continue;
+        await createScreenPeer(pubkey);
+      }
 
-  async stopSharing() {
-    if (!this.sharing) return;
-    this.sharing = false;
-
-    // Stop screen stream tracks
-    if (this.screenStream) {
-      this.screenStream.getTracks().forEach(t => t.stop());
-      this.screenStream = null;
-    }
-
-    // Close all screen peer connections
-    for (const [pubkey, pc] of this.screenPeers.entries()) {
-      pc.close();
-    }
-    this.screenPeers.clear();
-
-    // Announce stop
-    const event = createUnsignedEvent(
-      25000,
-      JSON.stringify({ type: 'screen-share-stop', channel: this.voiceChat.currentChannel }),
-      [['screen-share-stop', this.voiceChat.currentChannel]],
-      this.keyPair.publicKey
-    );
-    const signed = await signEvent(event, this.keyPair.privateKey);
-    this.relay.publish(signed);
-
-    if (this.onScreenShareStopped) {
-      this.onScreenShareStopped(this.keyPair.publicKey);
+      updateScreenUI();
+      return true;
+    } catch (e) {
+      console.error('Screen share error:', e);
+      return false;
     }
   }
 
-  async _createScreenOffer(pubkey) {
+  async function createScreenPeer(remotePubkey) {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-    this.screenPeers.set(pubkey, pc);
+    screenPeers.set(remotePubkey, pc);
 
-    if (this.screenStream) {
-      this.screenStream.getTracks().forEach(track => {
-        pc.addTrack(track, this.screenStream);
+    if (screenStream) {
+      screenStream.getTracks().forEach(track => {
+        pc.addTrack(track, screenStream);
       });
     }
 
-    pc.onicecandidate = async (e) => {
-      if (e.candidate) {
-        const event = createUnsignedEvent(
-          25000,
-          JSON.stringify({
+    pc.onicecandidate = async (event) => {
+      if (event.candidate) {
+        const sigEvent = await NostrCrypto.signEvent({
+          kind: 25000,
+          content: JSON.stringify({
             type: 'screen-ice-candidate',
-            candidate: e.candidate.toJSON()
+            candidate: event.candidate
           }),
-          [['p', pubkey]],
-          this.keyPair.publicKey
-        );
-        const signed = await signEvent(event, this.keyPair.privateKey);
-        this.relay.publish(signed);
+          tags: [['p', remotePubkey]],
+          created_at: Math.floor(Date.now() / 1000)
+        }, keyPair.privateKey);
+        NostrRelay.publish(sigEvent);
       }
     };
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
-    const event = createUnsignedEvent(
-      25000,
-      JSON.stringify({
+    const sigEvent = await NostrCrypto.signEvent({
+      kind: 25000,
+      content: JSON.stringify({
         type: 'screen-offer',
-        sdp: offer.sdp
+        sdp: pc.localDescription
       }),
-      [['p', pubkey]],
-      this.keyPair.publicKey
-    );
-    const signed = await signEvent(event, this.keyPair.privateKey);
-    this.relay.publish(signed);
+      tags: [['p', remotePubkey]],
+      created_at: Math.floor(Date.now() / 1000)
+    }, keyPair.privateKey);
+    NostrRelay.publish(sigEvent);
   }
 
-  async handleSignaling(event) {
-    if (event.pubkey === this.keyPair.publicKey) return;
+  async function handleScreenSignaling(event) {
+    if (event.pubkey === keyPair.publicKey) return;
 
     let data;
     try {
       data = JSON.parse(event.content);
-    } catch {
+    } catch (e) {
       return;
     }
 
-    if (data.type === 'screen-offer') {
-      await this._handleScreenOffer(event.pubkey, data);
-    } else if (data.type === 'screen-answer') {
-      await this._handleScreenAnswer(event.pubkey, data);
-    } else if (data.type === 'screen-ice-candidate') {
-      await this._handleScreenIceCandidate(event.pubkey, data);
-    }
-  }
+    // Only handle screen-* events here
+    if (!data.type || !data.type.startsWith('screen-')) return;
 
-  async _handleScreenOffer(pubkey, data) {
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-    this.screenPeers.set(pubkey, pc);
+    const remotePubkey = event.pubkey;
 
-    pc.ontrack = (e) => {
-      if (e.streams && e.streams[0] && this.onScreenStreamReceived) {
-        this.onScreenStreamReceived(pubkey, e.streams[0]);
-      }
-    };
+    switch (data.type) {
+      case 'screen-offer': {
+        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+        screenPeers.set(remotePubkey, pc);
 
-    pc.onicecandidate = async (e) => {
-      if (e.candidate) {
-        const event = createUnsignedEvent(
-          25000,
-          JSON.stringify({
-            type: 'screen-ice-candidate',
-            candidate: e.candidate.toJSON()
+        pc.ontrack = (trackEvent) => {
+          showScreenView(trackEvent.streams[0], remotePubkey);
+        };
+
+        pc.onicecandidate = async (iceEvent) => {
+          if (iceEvent.candidate) {
+            const sigEvent = await NostrCrypto.signEvent({
+              kind: 25000,
+              content: JSON.stringify({
+                type: 'screen-ice-candidate',
+                candidate: iceEvent.candidate
+              }),
+              tags: [['p', remotePubkey]],
+              created_at: Math.floor(Date.now() / 1000)
+            }, keyPair.privateKey);
+            NostrRelay.publish(sigEvent);
+          }
+        };
+
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        const sigEvent = await NostrCrypto.signEvent({
+          kind: 25000,
+          content: JSON.stringify({
+            type: 'screen-answer',
+            sdp: pc.localDescription
           }),
-          [['p', pubkey]],
-          this.keyPair.publicKey
-        );
-        const signed = await signEvent(event, this.keyPair.privateKey);
-        this.relay.publish(signed);
+          tags: [['p', remotePubkey]],
+          created_at: Math.floor(Date.now() / 1000)
+        }, keyPair.privateKey);
+        NostrRelay.publish(sigEvent);
+        break;
       }
-    };
 
-    await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
+      case 'screen-answer': {
+        const pc = screenPeers.get(remotePubkey);
+        if (pc) {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        }
+        break;
+      }
 
-    const event = createUnsignedEvent(
-      25000,
-      JSON.stringify({
-        type: 'screen-answer',
-        sdp: answer.sdp
-      }),
-      [['p', pubkey]],
-      this.keyPair.publicKey
-    );
-    const signed = await signEvent(event, this.keyPair.privateKey);
-    this.relay.publish(signed);
-  }
-
-  async _handleScreenAnswer(pubkey, data) {
-    const pc = this.screenPeers.get(pubkey);
-    if (!pc) return;
-    await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
-  }
-
-  async _handleScreenIceCandidate(pubkey, data) {
-    const pc = this.screenPeers.get(pubkey);
-    if (!pc) return;
-    try {
-      await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-    } catch (err) {
-      console.warn('Failed to add screen ICE candidate:', err);
+      case 'screen-ice-candidate': {
+        const pc = screenPeers.get(remotePubkey);
+        if (pc && data.candidate) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+          } catch (e) {
+            console.error('Screen ICE error:', e);
+          }
+        }
+        break;
+      }
     }
   }
 
-  _handleRemoteStart(pubkey) {
-    // Remote user started sharing - connection will come via screen-offer
-    console.log('Screen share started by:', pubkey);
+  function showScreenView(stream, pubkey) {
+    currentSharerPubkey = pubkey;
+
+    let videoContainer = document.getElementById('screen-view');
+    if (!videoContainer) return;
+
+    videoContainer.innerHTML = '';
+    videoContainer.style.display = 'flex';
+
+    const header = document.createElement('div');
+    header.className = 'screen-header';
+    const name = NostrChat ? NostrChat.getDisplayName(pubkey) : NostrCrypto.shortenPubkey(pubkey);
+    header.innerHTML = `<span>📺 ${name} teilt den Bildschirm</span>`;
+
+    const video = document.createElement('video');
+    video.srcObject = stream;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.className = 'screen-video';
+
+    videoContainer.appendChild(header);
+    videoContainer.appendChild(video);
   }
 
-  _handleRemoteStop(pubkey) {
-    const pc = this.screenPeers.get(pubkey);
-    if (pc) {
+  function removeScreenView() {
+    const videoContainer = document.getElementById('screen-view');
+    if (videoContainer) {
+      videoContainer.innerHTML = '';
+      videoContainer.style.display = 'none';
+    }
+  }
+
+  async function stopSharing() {
+    if (screenStream) {
+      screenStream.getTracks().forEach(track => track.stop());
+      screenStream = null;
+    }
+
+    // Close all screen peer connections
+    for (const [pubkey, pc] of screenPeers.entries()) {
       pc.close();
-      this.screenPeers.delete(pubkey);
     }
-    if (this.onScreenShareStopped) {
-      this.onScreenShareStopped(pubkey);
+    screenPeers.clear();
+
+    isSharing = false;
+
+    // Announce stop
+    const event = await NostrCrypto.signEvent({
+      kind: 25000,
+      content: JSON.stringify({ type: 'screen-share-stop' }),
+      tags: [['screen-share-stop', 'true']],
+      created_at: Math.floor(Date.now() / 1000)
+    }, keyPair.privateKey);
+    NostrRelay.publish(event);
+
+    if (currentSharerPubkey === keyPair.publicKey) {
+      currentSharerPubkey = null;
+      removeScreenView();
+    }
+
+    updateScreenUI();
+  }
+
+  function updateScreenUI() {
+    const shareBtn = document.getElementById('btn-screenshare');
+    if (shareBtn) {
+      shareBtn.textContent = isSharing ? '🖥️ Teilen beenden' : '🖥️ Bildschirm teilen';
+      shareBtn.classList.toggle('active', isSharing);
     }
   }
 
-  cleanup() {
-    if (this.sharing) {
-      this.stopSharing();
-    }
-    for (const pc of this.screenPeers.values()) {
-      pc.close();
-    }
-    this.screenPeers.clear();
+  function getIsSharing() {
+    return isSharing;
   }
-}
+
+  return {
+    init,
+    startSharing,
+    stopSharing,
+    getIsSharing,
+    updateScreenUI
+  };
+})();

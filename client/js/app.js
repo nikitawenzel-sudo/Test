@@ -1,393 +1,327 @@
-import { loadOrCreateKeyPair, saveKeyPair, shortenPubkey, createUnsignedEvent, signEvent } from './crypto.js';
-import { RelayConnection } from './relay.js';
-import { Chat } from './chat.js';
-import { VoiceChat } from './voice.js';
-import { ScreenShare } from './screenshare.js';
+// app.js - Main Application Logic
 
-// State
-let keyPair = null;
-let nickname = '';
-let relay = null;
-let chat = null;
-let voiceChat = null;
-let screenShare = null;
-const nicknames = new Map(); // pubkey → nickname
-const onlineUsers = new Map(); // pubkey → { nickname, inVoice }
+const App = (() => {
+  let keyPair = null;
+  let relayUrl = 'ws://localhost:8080';
 
-const DEFAULT_TEXT_CHANNELS = ['allgemein', 'gaming', 'random'];
-const DEFAULT_VOICE_CHANNELS = ['Lounge', 'Gaming', 'Musik'];
-let currentTextChannel = 'allgemein';
-let textChannels = [...DEFAULT_TEXT_CHANNELS];
-let voiceChannels = [...DEFAULT_VOICE_CHANNELS];
+  async function init() {
+    // Show setup modal if first time
+    const hasKey = localStorage.getItem('nostr_privkey');
+    const hasNick = localStorage.getItem('nostr_nickname');
+    const savedRelay = localStorage.getItem('nostr_relay');
 
-// DOM elements
-const setupScreen = document.getElementById('setup-screen');
-const appDiv = document.getElementById('app');
-const nicknameInput = document.getElementById('nickname-input');
-const relayInput = document.getElementById('relay-input');
-const pubkeyDisplay = document.getElementById('pubkey-display');
-const connectBtn = document.getElementById('connect-btn');
-const messagesEl = document.getElementById('messages');
-const chatInput = document.getElementById('chat-input');
-const currentChannelName = document.getElementById('current-channel-name');
-const connectionStatus = document.getElementById('connection-status');
-const textChannelsEl = document.getElementById('text-channels');
-const voiceChannelsEl = document.getElementById('voice-channels');
-const newChannelInput = document.getElementById('new-channel-input');
-const voiceControls = document.getElementById('voice-controls');
-const voiceChannelNameEl = document.getElementById('voice-channel-name');
-const btnMute = document.getElementById('btn-mute');
-const btnDeafen = document.getElementById('btn-deafen');
-const btnScreen = document.getElementById('btn-screen');
-const btnDisconnect = document.getElementById('btn-disconnect');
-const userAvatar = document.getElementById('user-avatar');
-const userName = document.getElementById('user-name');
-const userPubkeyShort = document.getElementById('user-pubkey-short');
-const membersListEl = document.getElementById('members-list');
-const screenShareContainer = document.getElementById('screen-share-container');
-const screenShareVideo = document.getElementById('screen-share-video');
-const screenShareLabel = document.getElementById('screen-share-label');
+    if (savedRelay) relayUrl = savedRelay;
 
-// Init: show pubkey on setup screen
-function initSetup() {
-  try {
-    keyPair = loadOrCreateKeyPair();
-    pubkeyDisplay.textContent = 'Public Key: ' + keyPair.publicKey;
-  } catch (err) {
-    console.error('Fehler beim Erstellen des Schluessels:', err);
-    pubkeyDisplay.textContent = 'FEHLER: ' + err.message;
-    pubkeyDisplay.style.color = '#ff4444';
-    return;
+    if (!hasKey || !hasNick) {
+      showSetupModal();
+    } else {
+      await startApp();
+    }
   }
 
-  const savedNick = localStorage.getItem('nostr-discord-nickname');
-  if (savedNick) nicknameInput.value = savedNick;
+  function showSetupModal() {
+    const modal = document.getElementById('setup-modal');
+    modal.style.display = 'flex';
 
-  const savedRelay = localStorage.getItem('nostr-discord-relay');
-  if (savedRelay) relayInput.value = savedRelay;
-}
+    const relayInput = document.getElementById('setup-relay');
+    const nickInput = document.getElementById('setup-nickname');
+    const startBtn = document.getElementById('setup-start');
+    const importKeyInput = document.getElementById('setup-import-key');
 
-// Connect and start app
-connectBtn.addEventListener('click', () => {
-  try {
-    if (!keyPair) {
-      alert('Schluessel konnte nicht erstellt werden. Druecke F12 und schau in die Browser-Konsole.');
-      return;
-    }
+    relayInput.value = relayUrl;
 
-    nickname = nicknameInput.value.trim() || 'Anon';
-    const relayUrl = relayInput.value.trim();
+    startBtn.addEventListener('click', async () => {
+      const nickname = nickInput.value.trim();
+      if (!nickname) {
+        nickInput.classList.add('error');
+        return;
+      }
 
-    if (!relayUrl) {
-      alert('Bitte eine Relay-URL eingeben');
-      return;
-    }
+      relayUrl = relayInput.value.trim() || relayUrl;
+      localStorage.setItem('nostr_relay', relayUrl);
 
-    connectBtn.textContent = 'Verbinde...';
-    connectBtn.disabled = true;
+      // Import or generate key
+      const importKey = importKeyInput.value.trim();
+      if (importKey && importKey.length === 64) {
+        localStorage.setItem('nostr_privkey', importKey);
+      }
 
-    localStorage.setItem('nostr-discord-nickname', nickname);
-    localStorage.setItem('nostr-discord-relay', relayUrl);
+      NostrCrypto.setNickname(nickname);
+      modal.style.display = 'none';
+      await startApp();
+    });
 
-    nicknames.set(keyPair.publicKey, nickname);
-
-    startApp(relayUrl);
-  } catch (err) {
-    console.error('Verbindungsfehler:', err);
-    alert('Fehler: ' + err.message);
-    connectBtn.textContent = 'Verbinden';
-    connectBtn.disabled = false;
+    // Enter key support
+    nickInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') startBtn.click();
+    });
   }
-});
 
-// Allow Enter to connect
-nicknameInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') connectBtn.click();
-});
+  async function startApp() {
+    // Load keys
+    keyPair = NostrCrypto.loadOrCreateKeyPair();
+    console.log('Public Key:', keyPair.publicKey);
 
-function startApp(relayUrl) {
-  setupScreen.style.display = 'none';
-  appDiv.style.display = 'block';
+    // Update UI with pubkey
+    const pubkeyEl = document.getElementById('my-pubkey');
+    if (pubkeyEl) pubkeyEl.textContent = NostrCrypto.shortenPubkey(keyPair.publicKey);
 
-  // Set user info
-  userAvatar.textContent = nickname.charAt(0).toUpperCase();
-  userName.textContent = nickname;
-  userPubkeyShort.textContent = shortenPubkey(keyPair.publicKey);
+    const nicknameEl = document.getElementById('my-nickname');
+    if (nicknameEl) nicknameEl.textContent = NostrCrypto.getNickname();
 
-  // Create relay connection
-  relay = new RelayConnection();
+    // Initialize modules
+    NostrChat.init(keyPair);
+    NostrVoice.init(keyPair);
+    NostrScreenShare.init(keyPair);
 
-  relay.onConnect(() => {
-    connectionStatus.textContent = 'Verbunden';
-    connectionStatus.className = 'connection-status connected';
-    setTimeout(() => { connectionStatus.style.display = 'none'; }, 2000);
+    // Connect to relay
+    updateConnectionStatus('connecting');
+    try {
+      await NostrRelay.connect(relayUrl);
+      updateConnectionStatus('connected');
 
-    // Announce presence
-    announcePresence();
+      // Publish nickname
+      await NostrChat.publishNickname(NostrCrypto.getNickname());
+    } catch (e) {
+      console.error('Connection failed:', e);
+      updateConnectionStatus('disconnected');
+    }
 
-    // Subscribe to presence events
-    subscribePresence();
-  });
-
-  relay.onDisconnect(() => {
-    connectionStatus.textContent = 'Verbindung verloren - Reconnecting...';
-    connectionStatus.className = 'connection-status disconnected';
-    connectionStatus.style.display = 'block';
-  });
-
-  // Create chat
-  chat = new Chat(relay, keyPair, nicknames);
-  chat.setMessageContainer(messagesEl);
-
-  // Create voice chat
-  voiceChat = new VoiceChat(relay, keyPair);
-  voiceChat.onVoiceUsersChanged = (users) => {
-    renderMembers();
-    renderVoiceChannels();
-  };
-
-  // Create screen share
-  screenShare = new ScreenShare(relay, keyPair, voiceChat);
-  screenShare.onScreenStreamReceived = (pubkey, stream) => {
-    const name = nicknames.get(pubkey) || shortenPubkey(pubkey);
-    screenShareLabel.textContent = name + ' teilt den Bildschirm';
-    screenShareVideo.srcObject = stream;
-    screenShareContainer.classList.add('active');
-  };
-  screenShare.onScreenShareStopped = (pubkey) => {
-    screenShareVideo.srcObject = null;
-    screenShareContainer.classList.remove('active');
-  };
-
-  // Extended signaling handler for screen share
-  const originalHandler = relay.signalingCallback;
-  relay.onSignaling((event) => {
-    // Voice handles its own signaling
-    voiceChat._handleSignaling(event);
-    // Screen share handles its own signaling
-    screenShare.handleSignaling(event);
-  });
-
-  // Render UI
-  renderTextChannels();
-  renderVoiceChannels();
-
-  // Connect to relay
-  relay.connect(relayUrl);
-
-  // Switch to default channel
-  switchTextChannel('allgemein');
-}
-
-// Presence: kind 0 (profile metadata in NOSTR)
-async function announcePresence() {
-  const event = createUnsignedEvent(
-    0,
-    JSON.stringify({ name: nickname }),
-    [],
-    keyPair.publicKey
-  );
-  const signed = await signEvent(event, keyPair.privateKey);
-  relay.publish(signed);
-}
-
-function subscribePresence() {
-  relay.subscribe(
-    { kinds: [0] },
-    (event) => {
+    NostrRelay.onConnect(async () => {
+      updateConnectionStatus('connected');
+      // Re-publish nickname on reconnect so other users see us
       try {
-        const meta = JSON.parse(event.content);
-        if (meta.name) {
-          nicknames.set(event.pubkey, meta.name);
-          onlineUsers.set(event.pubkey, {
-            nickname: meta.name,
-            inVoice: voiceChat ? voiceChat.voiceUsers.has(event.pubkey) : false
-          });
-          renderMembers();
-        }
-      } catch {}
-    }
-  );
-}
+        const nick = NostrCrypto.getNickname();
+        if (nick) await NostrChat.publishNickname(nick);
+      } catch (e) {
+        console.error('Failed to republish nickname:', e);
+      }
+    });
+    NostrRelay.onDisconnect(() => updateConnectionStatus('disconnected'));
 
-// Text channels
-function renderTextChannels() {
-  textChannelsEl.innerHTML = '';
-  for (const ch of textChannels) {
-    const item = document.createElement('div');
-    item.className = 'channel-item' + (ch === currentTextChannel ? ' active' : '');
-    item.innerHTML = `<span class="channel-icon">#</span> ${escapeHtml(ch)}`;
-    item.addEventListener('click', () => switchTextChannel(ch));
-    textChannelsEl.appendChild(item);
+    // Setup channels
+    setupChannels();
+
+    // Setup chat input
+    setupChatInput();
+
+    // Setup voice controls
+    setupVoiceControls();
+
+    // Setup settings
+    setupSettings();
+
+    // Switch to default channel
+    NostrChat.switchChannel('allgemein');
   }
-}
 
-function switchTextChannel(channel) {
-  currentTextChannel = channel;
-  currentChannelName.textContent = channel;
-  chatInput.placeholder = `Nachricht an #${channel}`;
-  renderTextChannels();
-  chat.switchChannel(channel);
-}
+  function updateConnectionStatus(status) {
+    const statusEl = document.getElementById('connection-status');
+    if (!statusEl) return;
 
-// Voice channels
-function renderVoiceChannels() {
-  voiceChannelsEl.innerHTML = '';
-  for (const ch of voiceChannels) {
-    const item = document.createElement('div');
-    const isActive = voiceChat && voiceChat.currentChannel === ch;
+    statusEl.className = 'status-indicator ' + status;
+    const labels = {
+      connected: '🟢 Verbunden',
+      connecting: '🟡 Verbinde...',
+      disconnected: '🔴 Getrennt'
+    };
+    statusEl.textContent = labels[status] || status;
+  }
 
-    // Count voice users in this channel
-    const voiceUserCount = voiceChat && voiceChat.currentChannel === ch
-      ? voiceChat.voiceUsers.size : 0;
+  function setupChannels() {
+    const channelList = document.getElementById('channel-list');
+    if (!channelList) return;
 
-    item.className = 'channel-item' + (isActive ? ' active' : '');
-    item.innerHTML = `
-      <span class="channel-icon">&#x1F50A;</span> ${escapeHtml(ch)}
-      ${voiceUserCount > 0 ? `<span class="voice-count">${voiceUserCount}</span>` : ''}
+    const channels = NostrChat.getDefaultChannels();
+    channelList.innerHTML = '';
+
+    // Text channels section
+    const textHeader = document.createElement('div');
+    textHeader.className = 'channel-section-header';
+    textHeader.textContent = 'TEXT CHANNELS';
+    channelList.appendChild(textHeader);
+
+    channels.forEach(channel => {
+      const item = document.createElement('div');
+      item.className = 'channel-item';
+      item.dataset.channel = channel;
+      item.innerHTML = `<span class="channel-hash">#</span> ${channel}`;
+      item.addEventListener('click', () => NostrChat.switchChannel(channel));
+      channelList.appendChild(item);
+    });
+
+    // Voice channel section
+    const voiceHeader = document.createElement('div');
+    voiceHeader.className = 'channel-section-header';
+    voiceHeader.textContent = 'VOICE CHANNELS';
+    channelList.appendChild(voiceHeader);
+
+    const voiceItem = document.createElement('div');
+    voiceItem.className = 'channel-item voice-channel';
+    voiceItem.dataset.channel = 'voice-general';
+    voiceItem.innerHTML = `<span class="channel-icon">🔊</span> Allgemein`;
+    voiceItem.addEventListener('click', async () => {
+      if (NostrVoice.isInVoice()) {
+        await NostrVoice.leaveVoice();
+      } else {
+        await NostrVoice.joinVoice('voice-general');
+      }
+    });
+    channelList.appendChild(voiceItem);
+
+    // Voice users container
+    const voiceUsers = document.createElement('div');
+    voiceUsers.id = 'voice-users';
+    voiceUsers.className = 'voice-users-list';
+    channelList.appendChild(voiceUsers);
+
+    // New channel input
+    const newChannelDiv = document.createElement('div');
+    newChannelDiv.className = 'new-channel';
+    newChannelDiv.innerHTML = `
+      <input type="text" id="new-channel-input" placeholder="+ Neuer Channel" />
     `;
-    item.addEventListener('click', () => joinVoiceChannel(ch));
-    voiceChannelsEl.appendChild(item);
+    channelList.appendChild(newChannelDiv);
+
+    document.getElementById('new-channel-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const name = e.target.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
+        if (name) {
+          // Add new channel to list
+          const item = document.createElement('div');
+          item.className = 'channel-item';
+          item.dataset.channel = name;
+          item.innerHTML = `<span class="channel-hash">#</span> ${name}`;
+          item.addEventListener('click', () => NostrChat.switchChannel(name));
+          // Insert before voice header
+          channelList.insertBefore(item, voiceHeader);
+
+          NostrChat.switchChannel(name);
+          e.target.value = '';
+        }
+      }
+    });
   }
-}
 
-async function joinVoiceChannel(channel) {
-  if (voiceChat.currentChannel === channel) return;
+  function setupChatInput() {
+    const input = document.getElementById('chat-input');
+    const sendBtn = document.getElementById('btn-send');
 
-  try {
-    await voiceChat.joinChannel(channel);
-    voiceControls.classList.add('active');
-    voiceChannelNameEl.textContent = channel;
-    renderVoiceChannels();
-    renderMembers();
-  } catch (err) {
-    console.error('Voice join failed:', err);
-    alert('Mikrofon-Zugriff fehlgeschlagen: ' + err.message);
-  }
-}
-
-// New channel
-newChannelInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
-    const name = newChannelInput.value.trim().toLowerCase().replace(/\s+/g, '-');
-    if (name && !textChannels.includes(name)) {
-      textChannels.push(name);
-      renderTextChannels();
-      switchTextChannel(name);
+    if (input) {
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          sendMessage();
+        }
+      });
     }
-    newChannelInput.value = '';
-  }
-});
 
-// Chat input
-chatInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    const text = chatInput.value;
-    if (text.trim()) {
-      chat.sendMessage(text);
-      chatInput.value = '';
-    }
-  }
-});
-
-// Voice control buttons
-btnMute.addEventListener('click', () => {
-  const muted = voiceChat.toggleMute();
-  btnMute.classList.toggle('active', muted);
-  btnMute.title = muted ? 'Unmute' : 'Mute';
-});
-
-btnDeafen.addEventListener('click', () => {
-  const deafened = voiceChat.toggleDeafen();
-  btnDeafen.classList.toggle('active', deafened);
-  btnDeafen.title = deafened ? 'Undeafen' : 'Deafen';
-});
-
-btnScreen.addEventListener('click', async () => {
-  if (screenShare.sharing) {
-    screenShare.stopSharing();
-    btnScreen.classList.remove('active');
-  } else {
-    await screenShare.startSharing();
-    if (screenShare.sharing) {
-      btnScreen.classList.add('active');
-    }
-  }
-});
-
-btnDisconnect.addEventListener('click', async () => {
-  await voiceChat.leaveChannel();
-  screenShare.cleanup();
-  voiceControls.classList.remove('active');
-  btnMute.classList.remove('active');
-  btnDeafen.classList.remove('active');
-  btnScreen.classList.remove('active');
-  screenShareVideo.srcObject = null;
-  screenShareContainer.classList.remove('active');
-  renderVoiceChannels();
-  renderMembers();
-});
-
-// Members list
-function renderMembers() {
-  membersListEl.innerHTML = '';
-
-  // Online users
-  const online = new Map(onlineUsers);
-  // Always include self
-  if (!online.has(keyPair.publicKey)) {
-    online.set(keyPair.publicKey, { nickname, inVoice: false });
-  }
-
-  // Update voice status
-  if (voiceChat) {
-    for (const [pk, info] of online) {
-      info.inVoice = voiceChat.voiceUsers.has(pk);
+    if (sendBtn) {
+      sendBtn.addEventListener('click', sendMessage);
     }
   }
 
-  // Voice users section
-  const voiceUsers = Array.from(online.entries()).filter(([, info]) => info.inVoice);
-  if (voiceUsers.length > 0) {
-    const cat = document.createElement('div');
-    cat.className = 'member-category';
-    cat.textContent = `Im Voice - ${voiceUsers.length}`;
-    membersListEl.appendChild(cat);
+  function sendMessage() {
+    const input = document.getElementById('chat-input');
+    if (!input) return;
 
-    for (const [pk, info] of voiceUsers) {
-      membersListEl.appendChild(createMemberItem(pk, info.nickname, true));
+    const text = input.value.trim();
+    if (text) {
+      NostrChat.sendMessage(text);
+      input.value = '';
+      input.focus();
     }
   }
 
-  // Online users section
-  const cat = document.createElement('div');
-  cat.className = 'member-category';
-  cat.textContent = `Online - ${online.size}`;
-  membersListEl.appendChild(cat);
+  function setupVoiceControls() {
+    const muteBtn = document.getElementById('btn-mute');
+    const deafenBtn = document.getElementById('btn-deafen');
+    const shareBtn = document.getElementById('btn-screenshare');
+    const disconnectBtn = document.getElementById('btn-voice-leave');
 
-  for (const [pk, info] of online) {
-    membersListEl.appendChild(createMemberItem(pk, info.nickname, info.inVoice));
+    if (muteBtn) {
+      muteBtn.addEventListener('click', () => NostrVoice.toggleMute());
+    }
+    if (deafenBtn) {
+      deafenBtn.addEventListener('click', () => NostrVoice.toggleDeafen());
+    }
+    if (shareBtn) {
+      shareBtn.addEventListener('click', async () => {
+        if (NostrScreenShare.getIsSharing()) {
+          await NostrScreenShare.stopSharing();
+        } else {
+          await NostrScreenShare.startSharing();
+        }
+      });
+    }
+    if (disconnectBtn) {
+      disconnectBtn.addEventListener('click', async () => {
+        await NostrVoice.leaveVoice();
+        await NostrScreenShare.stopSharing();
+      });
+    }
   }
-}
 
-function createMemberItem(pubkey, name, inVoice) {
-  const div = document.createElement('div');
-  div.className = 'member-item';
-  div.innerHTML = `
-    <div class="member-avatar ${inVoice ? 'in-voice' : ''}">${escapeHtml(name.charAt(0).toUpperCase())}</div>
-    <span class="member-name">${escapeHtml(name)}</span>
-    ${inVoice ? '<span class="member-voice-indicator">&#x1F50A;</span>' : ''}
-  `;
-  div.title = pubkey;
-  return div;
-}
+  function setupSettings() {
+    const settingsBtn = document.getElementById('btn-settings');
+    const settingsModal = document.getElementById('settings-modal');
 
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
+    if (settingsBtn && settingsModal) {
+      settingsBtn.addEventListener('click', () => {
+        document.getElementById('settings-nickname').value = NostrCrypto.getNickname() || '';
+        document.getElementById('settings-relay').value = localStorage.getItem('nostr_relay') || relayUrl;
+        document.getElementById('settings-pubkey').textContent = keyPair.publicKey;
+        document.getElementById('settings-privkey').textContent = '••••••••••••••••';
+        settingsModal.style.display = 'flex';
+      });
 
-// Boot
-initSetup();
+      document.getElementById('settings-close')?.addEventListener('click', () => {
+        settingsModal.style.display = 'none';
+      });
+
+      document.getElementById('settings-save')?.addEventListener('click', async () => {
+        const newNick = document.getElementById('settings-nickname').value.trim();
+        const newRelay = document.getElementById('settings-relay').value.trim();
+
+        if (newNick && newNick !== NostrCrypto.getNickname()) {
+          await NostrChat.publishNickname(newNick);
+        }
+
+        if (newRelay && newRelay !== relayUrl) {
+          localStorage.setItem('nostr_relay', newRelay);
+          // Would need to reconnect - simplified here
+          alert('Relay geändert. Bitte Seite neu laden.');
+        }
+
+        settingsModal.style.display = 'none';
+      });
+
+      document.getElementById('settings-show-privkey')?.addEventListener('click', () => {
+        const el = document.getElementById('settings-privkey');
+        if (el.textContent.includes('•')) {
+          el.textContent = keyPair.privateKey;
+        } else {
+          el.textContent = '••••••••••••••••';
+        }
+      });
+
+      document.getElementById('settings-copy-pubkey')?.addEventListener('click', () => {
+        navigator.clipboard.writeText(keyPair.publicKey);
+      });
+    }
+
+    // Close modals on backdrop click
+    document.querySelectorAll('.modal').forEach(modal => {
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.style.display = 'none';
+      });
+    });
+  }
+
+  return { init };
+})();
+
+// Start app when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+  App.init();
+});

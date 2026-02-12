@@ -1,111 +1,111 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'relay.db');
-
 class EventStore {
-  constructor() {
-    const dir = path.dirname(DB_PATH);
+  constructor(dbPath = path.join(__dirname, 'data', 'events.db')) {
+    // Erstelle data-Verzeichnis falls nötig
     const fs = require('fs');
+    const dir = path.dirname(dbPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
 
-    this.db = new Database(DB_PATH);
+    this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
-    this._createTables();
-    this._prepareStatements();
+    this.db.pragma('synchronous = NORMAL');
+    this._init();
   }
 
-  _createTables() {
+  _init() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS events (
         id TEXT PRIMARY KEY,
         pubkey TEXT NOT NULL,
         kind INTEGER NOT NULL,
-        content TEXT NOT NULL,
-        tags TEXT NOT NULL,
+        content TEXT NOT NULL DEFAULT '',
+        tags TEXT NOT NULL DEFAULT '[]',
         created_at INTEGER NOT NULL,
         sig TEXT NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
-      CREATE INDEX IF NOT EXISTS idx_events_pubkey ON events(pubkey);
-      CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at);
+      CREATE INDEX IF NOT EXISTS idx_kind ON events(kind);
+      CREATE INDEX IF NOT EXISTS idx_pubkey ON events(pubkey);
+      CREATE INDEX IF NOT EXISTS idx_created_at ON events(created_at);
+      CREATE INDEX IF NOT EXISTS idx_kind_created ON events(kind, created_at);
     `);
-  }
 
-  _prepareStatements() {
-    this.insertStmt = this.db.prepare(`
+    this._insertStmt = this.db.prepare(`
       INSERT OR IGNORE INTO events (id, pubkey, kind, content, tags, created_at, sig)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      VALUES (@id, @pubkey, @kind, @content, @tags, @created_at, @sig)
     `);
   }
 
   saveEvent(event) {
-    this.insertStmt.run(
-      event.id,
-      event.pubkey,
-      event.kind,
-      event.content,
-      JSON.stringify(event.tags),
-      event.created_at,
-      event.sig
-    );
+    // Speichere Event - kind 25000 (signaling) wird NICHT gespeichert
+    if (event.kind === 25000) return false;
+
+    const result = this._insertStmt.run({
+      id: event.id,
+      pubkey: event.pubkey,
+      kind: event.kind,
+      content: event.content,
+      tags: JSON.stringify(event.tags),
+      created_at: event.created_at,
+      sig: event.sig
+    });
+    return result.changes > 0;
   }
 
   queryEvents(filter) {
     let conditions = [];
-    let params = [];
+    let params = {};
+
+    if (filter.ids && filter.ids.length > 0) {
+      conditions.push(`id IN (${filter.ids.map((_, i) => `@id${i}`).join(',')})`);
+      filter.ids.forEach((id, i) => params[`id${i}`] = id);
+    }
 
     if (filter.kinds && filter.kinds.length > 0) {
-      conditions.push(`kind IN (${filter.kinds.map(() => '?').join(',')})`);
-      params.push(...filter.kinds);
+      conditions.push(`kind IN (${filter.kinds.map((_, i) => `@kind${i}`).join(',')})`);
+      filter.kinds.forEach((k, i) => params[`kind${i}`] = k);
     }
 
     if (filter.authors && filter.authors.length > 0) {
-      conditions.push(`pubkey IN (${filter.authors.map(() => '?').join(',')})`);
-      params.push(...filter.authors);
-    }
-
-    if (filter.ids && filter.ids.length > 0) {
-      conditions.push(`id IN (${filter.ids.map(() => '?').join(',')})`);
-      params.push(...filter.ids);
+      conditions.push(`pubkey IN (${filter.authors.map((_, i) => `@author${i}`).join(',')})`);
+      filter.authors.forEach((a, i) => params[`author${i}`] = a);
     }
 
     if (filter.since) {
-      conditions.push('created_at >= ?');
-      params.push(filter.since);
+      conditions.push('created_at >= @since');
+      params.since = filter.since;
     }
 
     if (filter.until) {
-      conditions.push('created_at <= ?');
-      params.push(filter.until);
+      conditions.push('created_at <= @until');
+      params.until = filter.until;
     }
 
-    // Filter by tag values (e.g. #channel)
-    if (filter['#channel'] && filter['#channel'].length > 0) {
-      const tagConditions = filter['#channel'].map(() =>
-        `EXISTS (SELECT 1 FROM json_each(tags) WHERE json_extract(value, '$[0]') = 'channel' AND json_extract(value, '$[1]') = ?)`
-      );
-      conditions.push(`(${tagConditions.join(' OR ')})`);
-      params.push(...filter['#channel']);
-    }
-
-    if (filter['#p'] && filter['#p'].length > 0) {
-      const tagConditions = filter['#p'].map(() =>
-        `EXISTS (SELECT 1 FROM json_each(tags) WHERE json_extract(value, '$[0]') = 'p' AND json_extract(value, '$[1]') = ?)`
-      );
-      conditions.push(`(${tagConditions.join(' OR ')})`);
-      params.push(...filter['#p']);
+    // Tag-Filter: #e, #p, #channel etc.
+    // Tags sind als JSON gespeichert, wir müssen LIKE verwenden
+    for (const [key, values] of Object.entries(filter)) {
+      if (key.startsWith('#') && Array.isArray(values)) {
+        const tagName = key.slice(1);
+        const tagConditions = values.map((val, i) => {
+          const paramName = `tag_${tagName}_${i}`;
+          params[paramName] = `["${tagName}","${val}"`;
+          return `tags LIKE '%' || @${paramName} || '%'`;
+        });
+        if (tagConditions.length > 0) {
+          conditions.push(`(${tagConditions.join(' OR ')})`);
+        }
+      }
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    const limit = filter.limit ? `LIMIT ${parseInt(filter.limit, 10)}` : 'LIMIT 500';
+    const limit = filter.limit ? Math.min(filter.limit, 1000) : 500;
 
-    const rows = this.db.prepare(
-      `SELECT * FROM events ${where} ORDER BY created_at ASC ${limit}`
-    ).all(...params);
+    const sql = `SELECT * FROM events ${where} ORDER BY created_at DESC LIMIT ${limit}`;
 
+    const rows = this.db.prepare(sql).all(params);
     return rows.map(row => ({
       id: row.id,
       pubkey: row.pubkey,

@@ -7,10 +7,7 @@ RUN npm install --production
 
 COPY . .
 
-RUN mkdir -p /app/data
-
-ENV PORT=8080
-ENV DB_PATH=/app/data/relay.db
+RUN mkdir -p data
 
 EXPOSE 8080
 

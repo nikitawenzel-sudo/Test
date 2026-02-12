@@ -1,287 +1,398 @@
-import { createUnsignedEvent, signEvent } from './crypto.js';
+// voice.js - WebRTC Voice Chat (Mesh Network)
 
-const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' }
-];
+const NostrVoice = (() => {
+  let localStream = null;
+  let peers = new Map(); // pubkey -> { pc: RTCPeerConnection, stream: MediaStream }
+  let keyPair = null;
+  let currentChannel = null;
+  let isMuted = false;
+  let isDeafened = false;
+  let voiceSubId = null;
+  let voiceJoinSubId = null;
+  let voiceLeaveSubId = null;
+  let voiceUsers = new Set(); // pubkeys in voice
 
-export class VoiceChat {
-  constructor(relay, keyPair) {
-    this.relay = relay;
-    this.keyPair = keyPair;
-    this.peers = new Map(); // pubkey → RTCPeerConnection
-    this.localStream = null;
-    this.currentChannel = null;
-    this.muted = false;
-    this.deafened = false;
-    this.voiceUsers = new Set(); // pubkeys in voice
-    this.onVoiceUsersChanged = null;
-    this.onRemoteStream = null;
-    this.screenShare = null; // reference to ScreenShare instance
+  const ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' }
+  ];
 
-    this._setupSignalingHandler();
+  function init(keys) {
+    keyPair = keys;
   }
 
-  _setupSignalingHandler() {
-    this.relay.onSignaling((event) => this._handleSignaling(event));
-  }
-
-  async joinChannel(channel) {
-    if (this.currentChannel) {
-      await this.leaveChannel();
-    }
-
-    this.currentChannel = channel;
-
-    // Get microphone
-    this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-    this.voiceUsers.add(this.keyPair.publicKey);
-    this._notifyVoiceUsersChanged();
-
-    // Announce join
-    const event = createUnsignedEvent(
-      25000,
-      JSON.stringify({ type: 'voice-join', channel }),
-      [['voice-join', channel]],
-      this.keyPair.publicKey
-    );
-    const signed = await signEvent(event, this.keyPair.privateKey);
-    this.relay.publish(signed);
-  }
-
-  async leaveChannel() {
-    if (!this.currentChannel) return;
-
-    // Announce leave
-    const event = createUnsignedEvent(
-      25000,
-      JSON.stringify({ type: 'voice-leave', channel: this.currentChannel }),
-      [['voice-leave', this.currentChannel]],
-      this.keyPair.publicKey
-    );
-    const signed = await signEvent(event, this.keyPair.privateKey);
-    this.relay.publish(signed);
-
-    // Close all peer connections
-    for (const [pubkey, pc] of this.peers.entries()) {
-      pc.close();
-    }
-    this.peers.clear();
-
-    // Stop local stream
-    if (this.localStream) {
-      this.localStream.getTracks().forEach(t => t.stop());
-      this.localStream = null;
-    }
-
-    this.voiceUsers.clear();
-    this.currentChannel = null;
-    this._notifyVoiceUsersChanged();
-  }
-
-  toggleMute() {
-    this.muted = !this.muted;
-    if (this.localStream) {
-      this.localStream.getAudioTracks().forEach(t => {
-        t.enabled = !this.muted;
-      });
-    }
-    return this.muted;
-  }
-
-  toggleDeafen() {
-    this.deafened = !this.deafened;
-    // Mute all remote audio
-    const audioElements = document.querySelectorAll('audio[data-voice-peer]');
-    audioElements.forEach(el => {
-      el.muted = this.deafened;
-    });
-    return this.deafened;
-  }
-
-  async _handleSignaling(event) {
-    if (event.pubkey === this.keyPair.publicKey) return;
-
-    let data;
+  async function joinVoice(channel) {
     try {
-      data = JSON.parse(event.content);
-    } catch {
-      return;
-    }
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      currentChannel = channel;
+      voiceUsers.add(keyPair.publicKey);
 
-    if (data.type === 'voice-join' && data.channel === this.currentChannel) {
-      this.voiceUsers.add(event.pubkey);
-      this._notifyVoiceUsersChanged();
-      // Initiate connection to new user
-      if (this.currentChannel) {
-        await this._createOffer(event.pubkey);
-      }
-    } else if (data.type === 'voice-leave') {
-      this.voiceUsers.delete(event.pubkey);
-      this._closePeer(event.pubkey);
-      this._notifyVoiceUsersChanged();
-    } else if (data.type === 'offer') {
-      await this._handleOffer(event.pubkey, data);
-    } else if (data.type === 'answer') {
-      await this._handleAnswer(event.pubkey, data);
-    } else if (data.type === 'ice-candidate') {
-      await this._handleIceCandidate(event.pubkey, data);
-    } else if (data.type === 'screen-share-start') {
-      if (this.screenShare) {
-        this.screenShare._handleRemoteStart(event.pubkey);
-      }
-    } else if (data.type === 'screen-share-stop') {
-      if (this.screenShare) {
-        this.screenShare._handleRemoteStop(event.pubkey);
-      }
+      // Subscribe to signaling events
+      voiceSubId = NostrRelay.subscribe(
+        { kinds: [25000], '#p': [keyPair.publicKey] },
+        handleSignalingEvent
+      );
+
+      // Announce voice join
+      const event = await NostrCrypto.signEvent({
+        kind: 25000,
+        content: JSON.stringify({ type: 'voice-join', channel }),
+        tags: [['voice-join', channel]],
+        created_at: Math.floor(Date.now() / 1000)
+      }, keyPair.privateKey);
+
+      // Send to all - we broadcast voice-join to everyone
+      // We need a general subscription for voice-join events
+      voiceJoinSubId = NostrRelay.subscribe(
+        { kinds: [25000], '#voice-join': [channel] },
+        async (sigEvent) => {
+          if (sigEvent.pubkey === keyPair.publicKey) return;
+          // Guard: ignore if we already left voice
+          if (!currentChannel) return;
+          // Guard: prevent duplicate peer connections
+          if (peers.has(sigEvent.pubkey)) return;
+
+          voiceUsers.add(sigEvent.pubkey);
+          updateVoiceUI();
+
+          // Initiate connection to new peer
+          await createPeerConnection(sigEvent.pubkey, true);
+        }
+      );
+
+      // Also subscribe to voice-leave
+      voiceLeaveSubId = NostrRelay.subscribe(
+        { kinds: [25000], '#voice-leave': [channel] },
+        (sigEvent) => {
+          if (sigEvent.pubkey === keyPair.publicKey) return;
+          removePeer(sigEvent.pubkey);
+        }
+      );
+
+      NostrRelay.publish(event);
+      updateVoiceUI();
+
+      return true;
+    } catch (e) {
+      console.error('Failed to join voice:', e);
+      return false;
     }
   }
 
-  _getOrCreatePeer(pubkey) {
-    if (this.peers.has(pubkey)) {
-      return this.peers.get(pubkey);
-    }
-
+  async function createPeerConnection(remotePubkey, isInitiator) {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
-    // Add local audio stream
-    if (this.localStream) {
-      this.localStream.getTracks().forEach(track => {
-        pc.addTrack(track, this.localStream);
+    peers.set(remotePubkey, { pc, stream: null });
+
+    // Add local audio tracks
+    if (localStream) {
+      localStream.getTracks().forEach(track => {
+        pc.addTrack(track, localStream);
       });
     }
 
-    // Handle remote stream
-    pc.ontrack = (e) => {
-      if (e.streams && e.streams[0]) {
-        this._attachRemoteStream(pubkey, e.streams[0]);
+    // Handle incoming tracks
+    pc.ontrack = (event) => {
+      const peerData = peers.get(remotePubkey);
+      if (peerData) {
+        peerData.stream = event.streams[0];
+        playAudioStream(remotePubkey, event.streams[0]);
       }
     };
 
-    // Handle ICE candidates
-    pc.onicecandidate = async (e) => {
-      if (e.candidate) {
-        const event = createUnsignedEvent(
-          25000,
-          JSON.stringify({
+    // ICE candidates
+    pc.onicecandidate = async (event) => {
+      if (event.candidate) {
+        const sigEvent = await NostrCrypto.signEvent({
+          kind: 25000,
+          content: JSON.stringify({
             type: 'ice-candidate',
-            candidate: e.candidate.toJSON(),
-            channel: this.currentChannel
+            candidate: event.candidate
           }),
-          [['p', pubkey]],
-          this.keyPair.publicKey
-        );
-        const signed = await signEvent(event, this.keyPair.privateKey);
-        this.relay.publish(signed);
+          tags: [['p', remotePubkey]],
+          created_at: Math.floor(Date.now() / 1000)
+        }, keyPair.privateKey);
+        NostrRelay.publish(sigEvent);
       }
     };
 
     pc.onconnectionstatechange = () => {
+      console.log(`Peer ${remotePubkey.slice(0,8)}: ${pc.connectionState}`);
       if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-        this._closePeer(pubkey);
+        removePeer(remotePubkey);
       }
     };
 
-    this.peers.set(pubkey, pc);
+    // If we're the initiator, create and send offer
+    if (isInitiator) {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      const sigEvent = await NostrCrypto.signEvent({
+        kind: 25000,
+        content: JSON.stringify({
+          type: 'offer',
+          sdp: pc.localDescription
+        }),
+        tags: [['p', remotePubkey]],
+        created_at: Math.floor(Date.now() / 1000)
+      }, keyPair.privateKey);
+      NostrRelay.publish(sigEvent);
+    }
+
     return pc;
   }
 
-  async _createOffer(pubkey) {
-    const pc = this._getOrCreatePeer(pubkey);
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
+  async function handleSignalingEvent(event) {
+    if (event.pubkey === keyPair.publicKey) return;
 
-    const event = createUnsignedEvent(
-      25000,
-      JSON.stringify({
-        type: 'offer',
-        sdp: offer.sdp,
-        channel: this.currentChannel
-      }),
-      [['p', pubkey]],
-      this.keyPair.publicKey
-    );
-    const signed = await signEvent(event, this.keyPair.privateKey);
-    this.relay.publish(signed);
-  }
-
-  async _handleOffer(pubkey, data) {
-    if (!this.currentChannel) return;
-
-    const pc = this._getOrCreatePeer(pubkey);
-    await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
-
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-
-    const event = createUnsignedEvent(
-      25000,
-      JSON.stringify({
-        type: 'answer',
-        sdp: answer.sdp,
-        channel: this.currentChannel
-      }),
-      [['p', pubkey]],
-      this.keyPair.publicKey
-    );
-    const signed = await signEvent(event, this.keyPair.privateKey);
-    this.relay.publish(signed);
-
-    this.voiceUsers.add(pubkey);
-    this._notifyVoiceUsersChanged();
-  }
-
-  async _handleAnswer(pubkey, data) {
-    const pc = this.peers.get(pubkey);
-    if (!pc) return;
-    await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
-  }
-
-  async _handleIceCandidate(pubkey, data) {
-    const pc = this.peers.get(pubkey);
-    if (!pc) return;
+    let data;
     try {
-      await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-    } catch (err) {
-      console.warn('Failed to add ICE candidate:', err);
+      data = JSON.parse(event.content);
+    } catch (e) {
+      return;
+    }
+
+    // Skip screen-share signaling events (handled by screenshare.js)
+    if (data.type && data.type.startsWith('screen-')) return;
+
+    // Skip voice-join/voice-leave (handled by separate subscriptions)
+    if (data.type === 'voice-join' || data.type === 'voice-leave') return;
+
+    const remotePubkey = event.pubkey;
+
+    switch (data.type) {
+      case 'offer': {
+        let peerData = peers.get(remotePubkey);
+        if (!peerData) {
+          await createPeerConnection(remotePubkey, false);
+          peerData = peers.get(remotePubkey);
+        }
+
+        const pc = peerData.pc;
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        const sigEvent = await NostrCrypto.signEvent({
+          kind: 25000,
+          content: JSON.stringify({
+            type: 'answer',
+            sdp: pc.localDescription
+          }),
+          tags: [['p', remotePubkey]],
+          created_at: Math.floor(Date.now() / 1000)
+        }, keyPair.privateKey);
+        NostrRelay.publish(sigEvent);
+
+        voiceUsers.add(remotePubkey);
+        updateVoiceUI();
+        break;
+      }
+
+      case 'answer': {
+        const peerData = peers.get(remotePubkey);
+        if (peerData) {
+          await peerData.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        }
+        break;
+      }
+
+      case 'ice-candidate': {
+        const peerData = peers.get(remotePubkey);
+        if (peerData && data.candidate) {
+          try {
+            await peerData.pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+          } catch (e) {
+            console.error('ICE candidate error:', e);
+          }
+        }
+        break;
+      }
     }
   }
 
-  _attachRemoteStream(pubkey, stream) {
+  function playAudioStream(pubkey, stream) {
     // Remove existing audio element
-    const existing = document.querySelector(`audio[data-voice-peer="${pubkey}"]`);
-    if (existing) existing.remove();
+    const existingEl = document.getElementById('audio-' + pubkey);
+    if (existingEl) existingEl.remove();
 
     const audio = document.createElement('audio');
-    audio.autoplay = true;
-    audio.dataset.voicePeer = pubkey;
+    audio.id = 'audio-' + pubkey;
     audio.srcObject = stream;
-    audio.muted = this.deafened;
-    document.body.appendChild(audio);
+    audio.autoplay = true;
+    audio.muted = isDeafened;
 
-    if (this.onRemoteStream) {
-      this.onRemoteStream(pubkey, stream);
+    // Hidden audio elements container
+    let container = document.getElementById('audio-container');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'audio-container';
+      container.style.display = 'none';
+      document.body.appendChild(container);
+    }
+    container.appendChild(audio);
+  }
+
+  function toggleMute() {
+    isMuted = !isMuted;
+    if (localStream) {
+      localStream.getAudioTracks().forEach(track => {
+        track.enabled = !isMuted;
+      });
+    }
+    updateVoiceUI();
+    return isMuted;
+  }
+
+  function toggleDeafen() {
+    isDeafened = !isDeafened;
+    // Mute/unmute all remote audio
+    document.querySelectorAll('#audio-container audio').forEach(audio => {
+      audio.muted = isDeafened;
+    });
+    // Also mute self when deafened
+    if (isDeafened && !isMuted) {
+      isMuted = true;
+      if (localStream) {
+        localStream.getAudioTracks().forEach(track => {
+          track.enabled = false;
+        });
+      }
+    }
+    updateVoiceUI();
+    return isDeafened;
+  }
+
+  async function leaveVoice() {
+    // Send leave event
+    if (currentChannel) {
+      const event = await NostrCrypto.signEvent({
+        kind: 25000,
+        content: JSON.stringify({ type: 'voice-leave', channel: currentChannel }),
+        tags: [['voice-leave', currentChannel]],
+        created_at: Math.floor(Date.now() / 1000)
+      }, keyPair.privateKey);
+      NostrRelay.publish(event);
+    }
+
+    // Close all peer connections
+    for (const [pubkey, peerData] of peers.entries()) {
+      peerData.pc.close();
+    }
+    peers.clear();
+
+    // Stop local stream
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+      localStream = null;
+    }
+
+    // Clean up audio elements
+    const container = document.getElementById('audio-container');
+    if (container) container.innerHTML = '';
+
+    // Unsubscribe all voice-related subscriptions
+    if (voiceSubId) {
+      NostrRelay.unsubscribe(voiceSubId);
+      voiceSubId = null;
+    }
+    if (voiceJoinSubId) {
+      NostrRelay.unsubscribe(voiceJoinSubId);
+      voiceJoinSubId = null;
+    }
+    if (voiceLeaveSubId) {
+      NostrRelay.unsubscribe(voiceLeaveSubId);
+      voiceLeaveSubId = null;
+    }
+
+    voiceUsers.clear();
+    currentChannel = null;
+    isMuted = false;
+    isDeafened = false;
+
+    updateVoiceUI();
+  }
+
+  function removePeer(pubkey) {
+    const peerData = peers.get(pubkey);
+    if (peerData) {
+      peerData.pc.close();
+      peers.delete(pubkey);
+    }
+    voiceUsers.delete(pubkey);
+
+    const audioEl = document.getElementById('audio-' + pubkey);
+    if (audioEl) audioEl.remove();
+
+    updateVoiceUI();
+  }
+
+  function updateVoiceUI() {
+    // Update voice user list
+    const voiceUsersEl = document.getElementById('voice-users');
+    if (voiceUsersEl) {
+      voiceUsersEl.innerHTML = '';
+      for (const pubkey of voiceUsers) {
+        const li = document.createElement('div');
+        li.className = 'voice-user';
+        li.dataset.pubkey = pubkey;
+        const isMe = pubkey === keyPair?.publicKey;
+        const name = NostrChat ? NostrChat.getDisplayName(pubkey) : NostrCrypto.shortenPubkey(pubkey);
+        li.innerHTML = `
+          <span class="voice-indicator ${isMe && isMuted ? 'muted' : 'speaking'}">🎤</span>
+          <span class="user-name" data-pubkey="${pubkey}">${name}</span>
+          ${isMe ? '<span class="me-badge">(Du)</span>' : ''}
+        `;
+        voiceUsersEl.appendChild(li);
+      }
+    }
+
+    // Update controls
+    const muteBtn = document.getElementById('btn-mute');
+    const deafenBtn = document.getElementById('btn-deafen');
+    const voiceControls = document.getElementById('voice-controls');
+
+    if (muteBtn) {
+      muteBtn.textContent = isMuted ? '🔇 Unmute' : '🎤 Mute';
+      muteBtn.classList.toggle('active', isMuted);
+    }
+    if (deafenBtn) {
+      deafenBtn.textContent = isDeafened ? '🔇 Undeafen' : '🔊 Deafen';
+      deafenBtn.classList.toggle('active', isDeafened);
+    }
+    if (voiceControls) {
+      voiceControls.style.display = currentChannel ? 'flex' : 'none';
     }
   }
 
-  _closePeer(pubkey) {
-    const pc = this.peers.get(pubkey);
-    if (pc) {
-      pc.close();
-      this.peers.delete(pubkey);
-    }
-    const audio = document.querySelector(`audio[data-voice-peer="${pubkey}"]`);
-    if (audio) audio.remove();
+  function isInVoice() {
+    return currentChannel !== null;
   }
 
-  _notifyVoiceUsersChanged() {
-    if (this.onVoiceUsersChanged) {
-      this.onVoiceUsersChanged(Array.from(this.voiceUsers));
-    }
+  function getVoiceChannel() {
+    return currentChannel;
   }
 
-  get isInVoice() {
-    return this.currentChannel !== null;
+  function getVoiceUsers() {
+    return voiceUsers;
   }
-}
+
+  function isMutedState() {
+    return isMuted;
+  }
+
+  return {
+    init,
+    joinVoice,
+    leaveVoice,
+    toggleMute,
+    toggleDeafen,
+    isInVoice,
+    getVoiceChannel,
+    getVoiceUsers,
+    isMutedState,
+    updateVoiceUI
+  };
+})();

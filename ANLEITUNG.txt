@@ -1,0 +1,267 @@
+================================================================================
+                     NOSTR DISCORD - ANLEITUNG
+                   Dezentraler Chat mit Voice & Screen Share
+================================================================================
+
+INHALT
+------
+1. Was ist das?
+2. Installation
+3. Benutzung
+4. Wie funktioniert es?
+5. Troubleshooting
+6. Erweiterungsmoeglichkeiten
+
+================================================================================
+1. WAS IST DAS?
+================================================================================
+
+NOSTR Discord ist ein dezentraler Chat-Client aehnlich Discord, aber basierend
+auf dem NOSTR-Protokoll. Statt eines zentralen Servers mit Accounts verwendet
+es kryptographische Schluesselpaare als Identitaet.
+
+Kernkonzepte:
+- Deine Identitaet = ein Schluesselpaar (Private Key + Public Key)
+- Nachrichten werden kryptographisch signiert (Schnorr/secp256k1)
+- Ein Relay-Server leitet Events weiter und speichert Chat-Verlauf
+- Voice und Screen Share laufen direkt Peer-to-Peer (WebRTC)
+- Maximal 10 gleichzeitige Nutzer
+
+================================================================================
+2. INSTALLATION
+================================================================================
+
+VORAUSSETZUNGEN:
+- Node.js Version 18 oder neuer (https://nodejs.org)
+- Ein moderner Browser (Chrome, Firefox, Edge)
+- npm (kommt mit Node.js)
+
+SCHRITT 1: Relay-Server installieren
+-------------------------------------
+  cd nostr-discord/relay
+  npm install
+
+  Das installiert folgende Abhaengigkeiten:
+  - ws: WebSocket-Server
+  - better-sqlite3: SQLite-Datenbank
+  - @noble/secp256k1: Signatur-Verifikation
+  - @noble/hashes: SHA-256 Hashing
+
+SCHRITT 2: Relay-Server starten
+---------------------------------
+  cd nostr-discord/relay
+  npm start
+
+  Ausgabe: "NOSTR-Discord Relay running on ws://localhost:8080"
+
+  Der Server laeuft jetzt und wartet auf Verbindungen.
+  Lasse dieses Terminal offen!
+
+SCHRITT 3: Client oeffnen
+---------------------------
+  Option A (einfachste):
+    Oeffne die Datei nostr-discord/client/index.html direkt im Browser
+    (Doppelklick oder File > Open)
+
+  Option B (empfohlen fuer Netzwerk):
+    cd nostr-discord/client
+    python3 -m http.server 3000
+
+    Dann oeffne http://localhost:3000 im Browser.
+
+  Option C (mit npx):
+    npx serve nostr-discord/client -p 3000
+
+SCHRITT 4: Mit Docker (optional)
+-----------------------------------
+  cd nostr-discord
+  docker-compose up -d
+
+  Der Relay laeuft dann als Container auf Port 8080.
+
+================================================================================
+3. BENUTZUNG
+================================================================================
+
+ERSTER START:
+1. Beim ersten Oeffnen erscheint ein Setup-Dialog
+2. Gib einen Nickname ein (z.B. "Alice")
+3. Relay-URL: ws://localhost:8080 (oder dein Server)
+4. Optional: Importiere einen vorhandenen Private Key (64 Hex-Zeichen)
+5. Klicke "Starten"
+
+Ein neues Schluesselpaar wird automatisch generiert und im Browser gespeichert.
+
+TEXT-CHAT:
+- Links siehst du die Channel-Liste: allgemein, gaming, random, musik, dev
+- Klicke auf einen Channel um ihn zu oeffnen
+- Tippe eine Nachricht und druecke Enter zum Senden
+- Shift+Enter fuer Zeilenumbruch
+- Einfaches Markdown: *kursiv*, **fett**, `code`
+- URLs werden automatisch zu Links
+
+NEUEN CHANNEL ERSTELLEN:
+- Ganz unten in der Channel-Liste gibt es ein Eingabefeld
+- Tippe einen Namen ein und druecke Enter
+- Nur Kleinbuchstaben, Zahlen und Bindestriche erlaubt
+
+VOICE CHAT:
+1. Klicke auf "Allgemein" unter VOICE CHANNELS
+2. Erlaube den Mikrofon-Zugriff im Browser
+3. Du bist jetzt im Voice-Channel
+4. Andere User die beitreten werden automatisch verbunden
+5. Buttons unten:
+   - Mute: Mikrofon stumm schalten
+   - Deafen: Alle Audio stumm schalten
+   - Bildschirm teilen: Screen Share starten
+   - Trennen: Voice verlassen
+
+SCREEN SHARE:
+1. Du musst im Voice-Chat sein
+2. Klicke "Bildschirm teilen"
+3. Waehle im Browser-Dialog was du teilen willst
+4. Andere sehen deinen Bildschirm oben im Chat-Bereich
+5. "Teilen beenden" zum Stoppen
+
+EINSTELLUNGEN:
+- Klicke das Zahnrad-Symbol unten links
+- Nickname aendern
+- Relay-URL aendern (erfordert Neuladen)
+- Public Key kopieren (zum Teilen mit anderen)
+- Private Key anzeigen (NIEMALS teilen!)
+
+================================================================================
+4. WIE FUNKTIONIERT ES?
+================================================================================
+
+ARCHITEKTUR-UEBERSICHT:
+
+  Browser A  <--WebSocket-->  Relay Server  <--WebSocket-->  Browser B
+      |                          |                               |
+      |                     SQLite DB                            |
+      |                  (Chat-Verlauf)                          |
+      |                                                          |
+      +------ WebRTC (Peer-to-Peer, Voice + Screen) ------------+
+
+IDENTITAET:
+- Jeder User hat ein secp256k1 Schluesselpaar
+- Private Key: 32 Bytes (64 Hex-Zeichen) - bleibt geheim
+- Public Key: 32 Bytes (x-only) - ist deine oeffentliche Identitaet
+- Gespeichert im localStorage des Browsers
+- Gleicher Key = gleiche Identitaet, auch auf anderem Geraet
+
+EVENTS (NOSTR NIP-01):
+- Jede Aktion erzeugt ein "Event" (JSON-Objekt)
+- Event-Felder:
+    id: SHA-256 Hash des serialisierten Events (eindeutige ID)
+    pubkey: Public Key des Absenders
+    created_at: Unix-Timestamp
+    kind: Event-Typ (0=Profil, 1=Nachricht, 25000=Signaling)
+    tags: Array von Tag-Arrays [["channel", "allgemein"], ...]
+    content: Inhalt (Text, JSON, etc.)
+    sig: Schnorr-Signatur ueber die Event-ID
+
+- Die ID wird berechnet als:
+    SHA-256( JSON.stringify([0, pubkey, created_at, kind, tags, content]) )
+
+- Die Signatur (BIP-340 Schnorr) wird ueber die ID erstellt
+- Der Relay verifiziert jede Signatur vor dem Weiterleiten
+
+RELAY-PROTOKOLL:
+- Client -> Relay: ["EVENT", event]       (Event senden)
+- Client -> Relay: ["REQ", subId, filter] (Events abfragen)
+- Client -> Relay: ["CLOSE", subId]       (Subscription beenden)
+- Relay -> Client: ["EVENT", subId, event] (Event empfangen)
+- Relay -> Client: ["EOSE", subId]        (Ende gespeicherter Events)
+- Relay -> Client: ["OK", eventId, bool, msg] (Bestaetigung)
+
+WEBRTC (VOICE & SCREEN SHARE):
+- Mesh-Netzwerk: Jeder User verbindet sich direkt mit jedem anderen
+- Signaling (SDP/ICE-Austausch) laeuft ueber den Relay als kind:25000 Events
+- Diese Events werden NICHT gespeichert (nur weitergeleitet)
+- STUN-Server (Google) helfen beim NAT-Traversal
+- Audio/Video-Daten fliessen direkt zwischen den Browsern
+
+================================================================================
+5. TROUBLESHOOTING
+================================================================================
+
+PROBLEM: "Relay nicht erreichbar"
+LOESUNG:
+  - Ist der Relay-Server gestartet? (npm start im relay/ Ordner)
+  - Stimmt die URL? (ws://localhost:8080)
+  - Firewall pruefen (Port 8080 muss offen sein)
+
+PROBLEM: "Voice funktioniert nicht"
+LOESUNG:
+  - Browser muss Mikrofon-Zugriff erlauben
+  - HTTPS erforderlich fuer Mikrofon (ausser localhost)
+  - Beide User muessen im gleichen Voice-Channel sein
+  - Bei strengem NAT: TURN-Server noetig (siehe Erweiterungen)
+
+PROBLEM: "Screen Share startet nicht"
+LOESUNG:
+  - Du musst im Voice-Chat sein
+  - Browser muss Screen-Share erlauben
+  - HTTPS erforderlich (ausser localhost)
+
+PROBLEM: "Nachrichten kommen nicht an"
+LOESUNG:
+  - Pruefe die Browser-Konsole (F12) auf Fehler
+  - Relay-Server Logs pruefen
+  - Beide User muessen zum gleichen Relay verbunden sein
+  - Gleicher Channel?
+
+PROBLEM: "Signatur ungueltig"
+LOESUNG:
+  - Browser-Cache leeren
+  - localStorage loeschen und neu starten
+  - Private Key pruefen (64 Hex-Zeichen)
+
+PROBLEM: "Seite laden fehlschlaegt"
+LOESUNG:
+  - index.html direkt im Browser oeffnen ODER
+  - Lokalen HTTP-Server verwenden
+  - Browser-Konsole auf Fehler pruefen
+
+================================================================================
+6. ERWEITERUNGSMOEGLICHKEITEN
+================================================================================
+
+FUER PRODUKTION:
+- WSS (WebSocket Secure) mit TLS-Zertifikat
+- TURN-Server (coturn) fuer NAT-Traversal bei Voice
+- Rate-Limiting im Relay
+- Spam-Schutz (Proof-of-Work oder Web-of-Trust)
+- Verschluesselte DMs (NIP-04)
+- Mehrere Relays gleichzeitig
+
+FEATURE-IDEEN:
+- Datei-Upload (als Base64 in Events oder externer Speicher)
+- Emoji-Reaktionen (kind:7 Events)
+- Threads / Antworten
+- User-Profile mit Avataren
+- Push-Benachrichtigungen
+- Mobile App (React Native / Flutter)
+- Ende-zu-Ende verschluesselte Channels
+- Bot-System
+- Rollen und Berechtigungen (kryptographisch)
+
+NOSTR-KOMPATIBILITAET:
+- Dieses Projekt ist grundsaetzlich NIP-01 kompatibel
+- Du kannst existierende NOSTR-Clients (Damus, Amethyst, etc.) nutzen
+  um Chat-Nachrichten zu lesen
+- Die Channel-Tags sind custom (#channel), aber das ist NOSTR-konform
+- WebRTC-Signaling (kind:25000) ist custom und nicht NOSTR-Standard
+
+DEPLOYMENT-TIPPS:
+- Relay auf einem VPS hosten (z.B. Hetzner, DigitalOcean)
+- Client auf GitHub Pages oder Netlify hosten
+- Nginx als Reverse-Proxy mit SSL-Terminierung
+- Docker-Compose fuer einfaches Deployment
+- Backup der SQLite-Datenbank (relay/data/events.db)
+
+================================================================================
+  Erstellt mit NOSTR-Prinzipien: Schluesselpaare, signierte Events, Relays
+  Kein Account noetig. Dein Key ist deine Identitaet.
+================================================================================

@@ -1,15 +1,17 @@
 {
   "name": "nostr-discord-relay",
   "version": "1.0.0",
-  "description": "NOSTR-style relay for decentralized chat with WebRTC signaling",
+  "description": "NOSTR-based Discord clone relay server",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js"
   },
   "dependencies": {
-    "ws": "^8.16.0",
-    "better-sqlite3": "^11.0.0",
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^1.6.1",
     "@noble/secp256k1": "^2.1.0",
-    "@noble/hashes": "^1.4.0"
+    "better-sqlite3": "^11.7.0",
+    "ws": "^8.16.0"
   }
 }

@@ -3,125 +3,150 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NOSTR-Discord</title>
+  <title>NOSTR Discord</title>
   <link rel="stylesheet" href="css/style.css">
-  <script type="importmap">
-  {
-    "imports": {
-      "@noble/secp256k1": "https://cdn.jsdelivr.net/npm/@noble/secp256k1@2.1.0/+esm",
-      "@noble/hashes/sha256": "https://cdn.jsdelivr.net/npm/@noble/hashes@1.4.0/sha256/+esm",
-      "@noble/hashes/utils": "https://cdn.jsdelivr.net/npm/@noble/hashes@1.4.0/utils/+esm"
-    }
-  }
-  </script>
 </head>
 <body>
+  <!-- Setup Modal -->
+  <div id="setup-modal" class="modal" style="display: none;">
+    <div class="modal-content setup-modal-content">
+      <h1>🌐 NOSTR Discord</h1>
+      <p class="subtitle">Dezentraler Chat • Voice • Screen Share</p>
 
-  <!-- Setup Screen -->
-  <div id="setup-screen">
-    <div class="setup-card">
-      <h1>NOSTR-Discord</h1>
-      <p class="subtitle">Dezentraler Chat mit Voice &amp; Screen Share</p>
+      <div class="form-group">
+        <label for="setup-nickname">Nickname</label>
+        <input type="text" id="setup-nickname" placeholder="Dein Nickname..." maxlength="32" autofocus>
+      </div>
 
-      <label for="nickname-input">Nickname</label>
-      <input type="text" id="nickname-input" placeholder="Dein Nickname" maxlength="32" autofocus>
+      <div class="form-group">
+        <label for="setup-relay">Relay Server</label>
+        <input type="text" id="setup-relay" placeholder="ws://localhost:8080">
+      </div>
 
-      <label for="relay-input">Relay URL</label>
-      <input type="text" id="relay-input" value="ws://localhost:8080" placeholder="ws://localhost:8080">
+      <div class="form-group">
+        <label for="setup-import-key">Private Key importieren (optional)</label>
+        <input type="text" id="setup-import-key" placeholder="64 Zeichen Hex-Key...">
+        <small>Leer lassen = neuen Key generieren</small>
+      </div>
 
-      <div class="pubkey-display" id="pubkey-display"></div>
-
-      <button id="connect-btn">Verbinden</button>
+      <button id="setup-start" class="btn-primary">🚀 Starten</button>
     </div>
   </div>
 
-  <!-- Main App -->
-  <div id="app">
-    <div class="app-layout">
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <h2>⚙️ Einstellungen</h2>
 
-      <!-- Left Sidebar: Channels -->
-      <div class="sidebar">
-        <div class="sidebar-header">NOSTR-Discord</div>
+      <div class="form-group">
+        <label for="settings-nickname">Nickname</label>
+        <input type="text" id="settings-nickname" maxlength="32">
+      </div>
 
-        <div class="channel-list">
-          <div class="channel-category">Text-Channels</div>
-          <div id="text-channels"></div>
+      <div class="form-group">
+        <label for="settings-relay">Relay Server</label>
+        <input type="text" id="settings-relay">
+      </div>
 
-          <div class="channel-category">Voice-Channels</div>
-          <div id="voice-channels"></div>
-        </div>
-
-        <div class="new-channel">
-          <input type="text" id="new-channel-input" placeholder="+ Neuer Channel..." maxlength="32">
-        </div>
-
-        <!-- Voice controls -->
-        <div class="voice-controls" id="voice-controls">
-          <div class="voice-info">
-            <span class="voice-status">Voice verbunden</span>
-            <span class="voice-channel-name" id="voice-channel-name"></span>
-          </div>
-          <button class="voice-btn" id="btn-mute" title="Mute">&#x1F3A4;</button>
-          <button class="voice-btn" id="btn-deafen" title="Deafen">&#x1F50A;</button>
-          <button class="voice-btn" id="btn-screen" title="Screen Share">&#x1F4BB;</button>
-          <button class="voice-btn disconnect" id="btn-disconnect" title="Disconnect">&#x260E;</button>
-        </div>
-
-        <!-- User panel -->
-        <div class="user-panel">
-          <div class="user-avatar" id="user-avatar">?</div>
-          <div class="user-info">
-            <div class="user-name" id="user-name">-</div>
-            <div class="user-pubkey" id="user-pubkey-short">-</div>
-          </div>
+      <div class="form-group">
+        <label>Public Key</label>
+        <div class="key-display">
+          <code id="settings-pubkey"></code>
+          <button id="settings-copy-pubkey" class="btn-small">📋 Kopieren</button>
         </div>
       </div>
 
-      <!-- Center: Chat -->
-      <div class="chat-area">
-        <div class="chat-header">
-          <span class="channel-hash">#</span>
-          <span id="current-channel-name">allgemein</span>
+      <div class="form-group">
+        <label>Private Key</label>
+        <div class="key-display">
+          <code id="settings-privkey">••••••••••••••••</code>
+          <button id="settings-show-privkey" class="btn-small">👁️ Anzeigen</button>
         </div>
-
-        <div id="connection-status" class="connection-status disconnected">Verbinde...</div>
-
-        <div class="screen-share-container" id="screen-share-container">
-          <span class="screen-share-label" id="screen-share-label">Screen Share</span>
-          <video id="screen-share-video" autoplay playsinline></video>
-        </div>
-
-        <div class="messages" id="messages"></div>
-
-        <div class="chat-input-area">
-          <div class="chat-input-wrapper">
-            <input type="text" id="chat-input" placeholder="Nachricht an #allgemein" maxlength="4000">
-          </div>
-        </div>
+        <small>⚠️ Niemals teilen! Dies ist deine Identität.</small>
       </div>
 
-      <!-- Right Sidebar: Members -->
-      <div class="members-sidebar">
-        <div class="members-header">Mitglieder</div>
-        <div class="members-list" id="members-list"></div>
+      <div class="modal-actions">
+        <button id="settings-save" class="btn-primary">💾 Speichern</button>
+        <button id="settings-close" class="btn-secondary">Schließen</button>
       </div>
-
     </div>
   </div>
 
-  <script type="module" src="js/app.js"></script>
-  <script>
-    // Fehlererkennung: Wenn die Module nicht laden, zeige eine Fehlermeldung
-    window.addEventListener('load', function() {
-      setTimeout(function() {
-        var display = document.getElementById('pubkey-display');
-        if (display && !display.textContent.includes('Public Key:')) {
-          display.textContent = 'FEHLER: JavaScript-Module konnten nicht geladen werden. Druecke F12 und schau in die Konsole.';
-          display.style.color = '#ff4444';
-          display.style.fontSize = '14px';
-        }
-      }, 5000);
-    });
-  </script>
+  <!-- Main App Layout -->
+  <div id="app" class="app-container">
+    <!-- Left Sidebar: Channels -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h2>🌐 NOSTR Discord</h2>
+        <span id="connection-status" class="status-indicator disconnected">🔴 Getrennt</span>
+      </div>
+
+      <div id="channel-list" class="channel-list">
+        <!-- Channels are dynamically generated -->
+      </div>
+
+      <!-- User Panel (bottom of sidebar) -->
+      <div class="user-panel">
+        <div class="user-info">
+          <div class="user-avatar" id="my-avatar">?</div>
+          <div class="user-details">
+            <span id="my-nickname" class="user-name">Loading...</span>
+            <span id="my-pubkey" class="user-pubkey">...</span>
+          </div>
+        </div>
+        <button id="btn-settings" class="btn-icon" title="Einstellungen">⚙️</button>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Screen Share View (hidden by default) -->
+      <div id="screen-view" class="screen-view" style="display: none;"></div>
+
+      <!-- Chat Header -->
+      <header class="chat-header">
+        <h3 id="current-channel-name"># allgemein</h3>
+      </header>
+
+      <!-- Messages Area -->
+      <div id="messages" class="messages-container">
+        <div class="welcome-message">
+          <h2>Willkommen bei #allgemein! 👋</h2>
+          <p>Dies ist der Anfang des Channels.</p>
+        </div>
+      </div>
+
+      <!-- Chat Input -->
+      <div class="chat-input-container">
+        <textarea id="chat-input" placeholder="Nachricht schreiben..." rows="1"></textarea>
+        <button id="btn-send" class="btn-send" title="Senden">➤</button>
+      </div>
+
+      <!-- Voice Controls (hidden when not in voice) -->
+      <div id="voice-controls" class="voice-controls" style="display: none;">
+        <button id="btn-mute" class="btn-voice" title="Mikrofon">🎤 Mute</button>
+        <button id="btn-deafen" class="btn-voice" title="Audio">🔊 Deafen</button>
+        <button id="btn-screenshare" class="btn-voice" title="Bildschirm teilen">🖥️ Bildschirm teilen</button>
+        <button id="btn-voice-leave" class="btn-voice btn-disconnect" title="Trennen">📞 Trennen</button>
+      </div>
+    </main>
+
+    <!-- Right Sidebar: Online Users (optional, simplified) -->
+    <aside class="sidebar-right">
+      <h3>Online</h3>
+      <div id="online-users" class="online-users-list">
+        <!-- Populated dynamically -->
+      </div>
+    </aside>
+  </div>
+
+  <!-- Scripts -->
+  <script src="js/noble-loader.js"></script>
+  <script src="js/crypto.js"></script>
+  <script src="js/relay.js"></script>
+  <script src="js/chat.js"></script>
+  <script src="js/voice.js"></script>
+  <script src="js/screenshare.js"></script>
+  <script src="js/app.js"></script>
 </body>
 </html>

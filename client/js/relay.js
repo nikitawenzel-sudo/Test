@@ -1,150 +1,193 @@
-export class RelayConnection {
-  constructor() {
-    this.ws = null;
-    this.url = null;
-    this.subscriptions = new Map(); // subId → callback
-    this.subCounter = 0;
-    this.reconnectTimeout = null;
-    this.onConnectCallback = null;
-    this.onDisconnectCallback = null;
-    this.signalingCallback = null;
+// relay.js - WebSocket connection to NOSTR relay
+
+const NostrRelay = (() => {
+  let ws = null;
+  let url = '';
+  let subscriptions = new Map(); // subId -> { filters, callback }
+  let eventCallbacks = []; // for raw event handling
+  let connectCallbacks = [];
+  let disconnectCallbacks = [];
+  let reconnectTimer = null;
+  let isConnected = false;
+  let subCounter = 0;
+
+  function connect(relayUrl) {
+    url = relayUrl;
+    return _doConnect();
   }
 
-  connect(url) {
-    this.url = url;
-    this._connect();
-  }
+  function _doConnect() {
+    return new Promise((resolve, reject) => {
+      let settled = false;
 
-  _connect() {
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
-      return;
-    }
-
-    this.ws = new WebSocket(this.url);
-
-    this.ws.onopen = () => {
-      console.log('Connected to relay:', this.url);
-      if (this.onConnectCallback) this.onConnectCallback();
-
-      // Re-subscribe existing subscriptions
-      for (const [subId, { filter }] of this.subscriptions.entries()) {
-        this.ws.send(JSON.stringify(['REQ', subId, filter]));
-      }
-    };
-
-    this.ws.onmessage = (e) => {
-      let msg;
       try {
-        msg = JSON.parse(e.data);
-      } catch {
+        ws = new WebSocket(url);
+      } catch (e) {
+        reject(e);
         return;
       }
 
-      if (!Array.isArray(msg)) return;
+      ws.onopen = () => {
+        console.log('Connected to relay:', url);
+        isConnected = true;
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        // Re-subscribe all active subscriptions
+        for (const [subId, sub] of subscriptions.entries()) {
+          const msg = ['REQ', subId, ...sub.filters];
+          ws.send(JSON.stringify(msg));
+        }
+        connectCallbacks.forEach(cb => cb());
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      };
 
-      const type = msg[0];
-
-      if (type === 'EVENT') {
-        const subId = msg[1];
-        const event = msg[2];
-
-        // Route signaling events
-        if (event.kind === 25000 && this.signalingCallback) {
-          this.signalingCallback(event);
+      ws.onmessage = (msg) => {
+        let data;
+        try {
+          data = JSON.parse(msg.data);
+        } catch (e) {
+          console.error('Invalid JSON from relay:', msg.data);
+          return;
         }
 
-        const sub = this.subscriptions.get(subId);
-        if (sub && sub.callback) {
-          sub.callback(event);
-        }
-      } else if (type === 'EOSE') {
-        const subId = msg[1];
-        const sub = this.subscriptions.get(subId);
-        if (sub && sub.eoseCallback) {
-          sub.eoseCallback();
-        }
-      } else if (type === 'OK') {
-        // Event accepted/rejected
-        const eventId = msg[1];
-        const accepted = msg[2];
-        if (!accepted) {
-          console.warn('Event rejected:', eventId, msg[3]);
-        }
-      } else if (type === 'NOTICE') {
-        console.warn('Relay notice:', msg[1]);
-      }
-    };
+        if (!Array.isArray(data)) return;
 
-    this.ws.onclose = () => {
-      console.log('Disconnected from relay');
-      if (this.onDisconnectCallback) this.onDisconnectCallback();
-      this._scheduleReconnect();
-    };
+        const type = data[0];
 
-    this.ws.onerror = (err) => {
-      console.error('WebSocket error:', err);
-    };
+        switch (type) {
+          case 'EVENT': {
+            const subId = data[1];
+            const event = data[2];
+
+            // Notify subscription callback
+            const sub = subscriptions.get(subId);
+            if (sub && sub.callback) {
+              sub.callback(event, subId);
+            }
+
+            // Notify raw event listeners
+            eventCallbacks.forEach(cb => cb(event));
+            break;
+          }
+          case 'EOSE': {
+            const subId = data[1];
+            const sub = subscriptions.get(subId);
+            if (sub && sub.eoseCallback) {
+              sub.eoseCallback(subId);
+            }
+            break;
+          }
+          case 'OK': {
+            const eventId = data[1];
+            const success = data[2];
+            const message = data[3] || '';
+            if (!success) {
+              console.warn(`Event ${eventId} rejected: ${message}`);
+            }
+            break;
+          }
+          case 'NOTICE': {
+            console.log('Relay notice:', data[1]);
+            break;
+          }
+        }
+      };
+
+      ws.onclose = () => {
+        console.log('Disconnected from relay');
+        isConnected = false;
+        disconnectCallbacks.forEach(cb => cb());
+        // Auto-reconnect after 3 seconds
+        if (!reconnectTimer) {
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            console.log('Reconnecting...');
+            _doConnect().catch(e => console.error('Reconnect failed:', e));
+          }, 3000);
+        }
+      };
+
+      ws.onerror = (err) => {
+        console.error('WebSocket error:', err);
+        if (!settled) {
+          settled = true;
+          reject(err);
+        }
+      };
+    });
   }
 
-  _scheduleReconnect() {
-    if (this.reconnectTimeout) return;
-    this.reconnectTimeout = setTimeout(() => {
-      this.reconnectTimeout = null;
-      console.log('Reconnecting...');
-      this._connect();
-    }, 3000);
-  }
+  function subscribe(filters, callback, eoseCallback = null) {
+    const subId = 'sub_' + (++subCounter);
+    const filtersArray = Array.isArray(filters) ? filters : [filters];
 
-  subscribe(filter, callback, eoseCallback = null) {
-    const subId = 'sub_' + (++this.subCounter);
-    this.subscriptions.set(subId, { filter, callback, eoseCallback });
+    subscriptions.set(subId, { filters: filtersArray, callback, eoseCallback });
 
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(['REQ', subId, filter]));
+    if (isConnected && ws) {
+      const msg = ['REQ', subId, ...filtersArray];
+      ws.send(JSON.stringify(msg));
     }
 
     return subId;
   }
 
-  unsubscribe(subId) {
-    this.subscriptions.delete(subId);
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(['CLOSE', subId]));
+  function unsubscribe(subId) {
+    subscriptions.delete(subId);
+    if (isConnected && ws) {
+      ws.send(JSON.stringify(['CLOSE', subId]));
     }
   }
 
-  publish(event) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(['EVENT', event]));
-    } else {
-      console.warn('Not connected to relay');
+  function publish(event) {
+    if (!isConnected || !ws) {
+      console.error('Not connected to relay');
+      return false;
     }
+    ws.send(JSON.stringify(['EVENT', event]));
+    return true;
   }
 
-  onSignaling(callback) {
-    this.signalingCallback = callback;
+  function onConnect(callback) {
+    connectCallbacks.push(callback);
   }
 
-  onConnect(callback) {
-    this.onConnectCallback = callback;
+  function onDisconnect(callback) {
+    disconnectCallbacks.push(callback);
   }
 
-  onDisconnect(callback) {
-    this.onDisconnectCallback = callback;
+  function onEvent(callback) {
+    eventCallbacks.push(callback);
   }
 
-  disconnect() {
-    if (this.reconnectTimeout) {
-      clearTimeout(this.reconnectTimeout);
-      this.reconnectTimeout = null;
+  function getStatus() {
+    return isConnected;
+  }
+
+  function disconnect() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
     }
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+    if (ws) {
+      ws.close();
     }
+    isConnected = false;
   }
 
-  get connected() {
-    return this.ws && this.ws.readyState === WebSocket.OPEN;
-  }
-}
+  return {
+    connect,
+    subscribe,
+    unsubscribe,
+    publish,
+    onConnect,
+    onDisconnect,
+    onEvent,
+    getStatus,
+    disconnect
+  };
+})();

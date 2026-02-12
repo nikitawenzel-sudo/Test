@@ -6,12 +6,13 @@ const NostrChat = (() => {
   let keyPair = null;
   let messageSet = new Set(); // Track event IDs to avoid duplicates
   let nicknameCache = {}; // pubkey -> nickname
+  let avatarCache = {}; // pubkey -> avatar data URL
 
   const DEFAULT_CHANNELS = ['allgemein', 'gaming', 'random', 'musik', 'dev'];
 
   function init(keys) {
     keyPair = keys;
-    // Subscribe to nickname events (kind 0 = metadata)
+    // Subscribe to metadata events (kind 0 = nickname + avatar)
     NostrRelay.subscribe(
       { kinds: [0] },
       (event) => {
@@ -19,21 +20,72 @@ const NostrChat = (() => {
           const meta = JSON.parse(event.content);
           if (meta.name) {
             nicknameCache[event.pubkey] = meta.name;
-            updateDisplayedNames(event.pubkey, meta.name);
           }
+          if (meta.picture) {
+            avatarCache[event.pubkey] = meta.picture;
+          }
+          updateDisplayedUser(event.pubkey);
+          updateOnlineUser(event.pubkey);
         } catch (e) {}
       }
     );
   }
 
-  function updateDisplayedNames(pubkey, name) {
+  function updateDisplayedUser(pubkey) {
+    const name = getDisplayName(pubkey);
+    const avatar = avatarCache[pubkey];
+
+    // Update author names in chat
     document.querySelectorAll(`.msg-author[data-pubkey="${pubkey}"]`).forEach(el => {
       el.textContent = name;
     });
-    // Update user list too
+
+    // Update avatars in chat messages
+    document.querySelectorAll(`.message[data-pubkey="${pubkey}"] .message-avatar`).forEach(el => {
+      el.innerHTML = avatar
+        ? `<img class="avatar-img" src="${avatar}">`
+        : name.charAt(0).toUpperCase();
+    });
+
+    // Update user list (right sidebar)
     document.querySelectorAll(`.user-item[data-pubkey="${pubkey}"] .user-name`).forEach(el => {
       el.textContent = name;
     });
+    document.querySelectorAll(`.user-item[data-pubkey="${pubkey}"] .user-avatar-small`).forEach(el => {
+      el.innerHTML = avatar
+        ? `<img class="avatar-img" src="${avatar}">`
+        : name.charAt(0).toUpperCase();
+    });
+
+    // Update voice user names
+    document.querySelectorAll(`.voice-user[data-pubkey="${pubkey}"] .user-name`).forEach(el => {
+      el.textContent = name;
+    });
+  }
+
+  function updateOnlineUser(pubkey) {
+    const onlineList = document.getElementById('online-users');
+    if (!onlineList) return;
+
+    const name = getDisplayName(pubkey);
+    const avatar = avatarCache[pubkey];
+
+    let userItem = onlineList.querySelector(`.user-item[data-pubkey="${pubkey}"]`);
+    if (!userItem) {
+      userItem = document.createElement('div');
+      userItem.className = 'user-item';
+      userItem.dataset.pubkey = pubkey;
+      onlineList.appendChild(userItem);
+    }
+
+    const avatarContent = avatar
+      ? `<img class="avatar-img" src="${avatar}">`
+      : name.charAt(0).toUpperCase();
+
+    userItem.innerHTML = `
+      <div class="user-avatar-small">${avatarContent}</div>
+      <span class="user-name">${name}</span>
+    `;
   }
 
   function getDisplayName(pubkey) {
@@ -41,13 +93,31 @@ const NostrChat = (() => {
     return NostrCrypto.shortenPubkey(pubkey);
   }
 
+  function getAvatarUrl(pubkey) {
+    return avatarCache[pubkey] || null;
+  }
+
+  function setLocalAvatar(pubkey, dataUrl) {
+    if (dataUrl) {
+      avatarCache[pubkey] = dataUrl;
+    }
+  }
+
   async function publishNickname(nickname) {
     NostrCrypto.setNickname(nickname);
     nicknameCache[keyPair.publicKey] = nickname;
 
+    const avatar = NostrCrypto.getAvatar();
+    if (avatar) {
+      avatarCache[keyPair.publicKey] = avatar;
+    }
+
+    const meta = { name: nickname };
+    if (avatar) meta.picture = avatar;
+
     const event = await NostrCrypto.signEvent({
       kind: 0,
-      content: JSON.stringify({ name: nickname }),
+      content: JSON.stringify(meta),
       tags: [],
       created_at: Math.floor(Date.now() / 1000)
     }, keyPair.privateKey);
@@ -116,11 +186,17 @@ const NostrChat = (() => {
     const dateStr = time.toLocaleDateString('de-DE');
     const displayName = getDisplayName(event.pubkey);
 
+    const avatarUrl = avatarCache[event.pubkey];
+    const avatarContent = avatarUrl
+      ? `<img class="avatar-img" src="${avatarUrl}">`
+      : displayName.charAt(0).toUpperCase();
+
     const msgEl = document.createElement('div');
     msgEl.className = 'message' + (isOwn ? ' own' : '');
     msgEl.dataset.eventId = event.id;
+    msgEl.dataset.pubkey = event.pubkey;
     msgEl.innerHTML = `
-      <div class="message-avatar">${displayName.charAt(0).toUpperCase()}</div>
+      <div class="message-avatar">${avatarContent}</div>
       <div class="message-body">
         <div class="message-header">
           <span class="msg-author" data-pubkey="${event.pubkey}">${escapeHtml(displayName)}</span>
@@ -193,6 +269,8 @@ const NostrChat = (() => {
     sendMessage,
     publishNickname,
     getDisplayName,
+    getAvatarUrl,
+    setLocalAvatar,
     getCurrentChannel,
     getDefaultChannels,
     getNicknameCache,

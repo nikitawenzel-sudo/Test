@@ -14,6 +14,15 @@
       <p class="subtitle">Dezentraler Chat • Voice • Screen Share</p>
 
       <div class="form-group">
+        <label>Profilbild (optional)</label>
+        <div class="avatar-upload" id="setup-avatar-upload">
+          <div class="avatar-preview" id="setup-avatar-preview">📷</div>
+          <span class="avatar-upload-text">Bild auswaehlen</span>
+          <input type="file" id="setup-avatar-input" accept="image/*" style="display:none">
+        </div>
+      </div>
+
+      <div class="form-group">
         <label for="setup-nickname">Nickname</label>
         <input type="text" id="setup-nickname" placeholder="Dein Nickname..." maxlength="32" autofocus>
       </div>
@@ -37,6 +46,15 @@
   <div id="settings-modal" class="modal" style="display: none;">
     <div class="modal-content">
       <h2>⚙️ Einstellungen</h2>
+
+      <div class="form-group">
+        <label>Profilbild</label>
+        <div class="avatar-upload" id="settings-avatar-upload">
+          <div class="avatar-preview" id="settings-avatar-preview">📷</div>
+          <span class="avatar-upload-text">Bild aendern</span>
+          <input type="file" id="settings-avatar-input" accept="image/*" style="display:none">
+        </div>
+      </div>
 
       <div class="form-group">
         <label for="settings-nickname">Nickname</label>

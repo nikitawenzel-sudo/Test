@@ -2,6 +2,8 @@
 
 const NostrVoice = (() => {
   let localStream = null;
+  let rawStream = null; // unprocessed mic stream
+  let audioContext = null;
   let peers = new Map(); // pubkey -> { pc: RTCPeerConnection, stream: MediaStream }
   let keyPair = null;
   let currentChannel = null;
@@ -11,6 +13,7 @@ const NostrVoice = (() => {
   let voiceJoinSubId = null;
   let voiceLeaveSubId = null;
   let voiceUsers = new Set(); // pubkeys in voice
+  let noiseGateActive = true;
 
   const ICE_SERVERS = [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -42,9 +45,93 @@ const NostrVoice = (() => {
     keyPair = keys;
   }
 
+  function createAudioPipeline(rawAudioStream) {
+    audioContext = new AudioContext({ sampleRate: 48000 });
+    const source = audioContext.createMediaStreamSource(rawAudioStream);
+
+    // High-pass filter: remove low-frequency rumble (< 80Hz)
+    const highpass = audioContext.createBiquadFilter();
+    highpass.type = 'highpass';
+    highpass.frequency.value = 80;
+    highpass.Q.value = 0.7;
+
+    // Low-pass filter: remove high-frequency hiss (> 14kHz)
+    const lowpass = audioContext.createBiquadFilter();
+    lowpass.type = 'lowpass';
+    lowpass.frequency.value = 14000;
+    lowpass.Q.value = 0.7;
+
+    // Compressor: even out volume levels (like Crisp)
+    const compressor = audioContext.createDynamicsCompressor();
+    compressor.threshold.value = -30;
+    compressor.knee.value = 20;
+    compressor.ratio.value = 6;
+    compressor.attack.value = 0.003;
+    compressor.release.value = 0.25;
+
+    // Noise gate via gain node
+    const gate = audioContext.createGain();
+    gate.gain.value = 1;
+
+    // Analyser for noise gate monitoring
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+    const analyserData = new Float32Array(analyser.fftSize);
+
+    // Signal chain: source -> highpass -> lowpass -> compressor -> gate -> destination
+    const destination = audioContext.createMediaStreamDestination();
+    source.connect(highpass);
+    highpass.connect(lowpass);
+    lowpass.connect(compressor);
+    compressor.connect(analyser); // branch for monitoring
+    compressor.connect(gate);
+    gate.connect(destination);
+
+    // Noise gate: smoothly mute when audio level is below threshold
+    const GATE_THRESHOLD = 0.008;
+    const GATE_OPEN_TIME = 0.01;   // 10ms attack
+    const GATE_CLOSE_TIME = 0.08;  // 80ms release
+
+    function monitorNoiseGate() {
+      if (!currentChannel || !audioContext) return;
+
+      analyser.getFloatTimeDomainData(analyserData);
+      let rms = 0;
+      for (let i = 0; i < analyserData.length; i++) {
+        rms += analyserData[i] * analyserData[i];
+      }
+      rms = Math.sqrt(rms / analyserData.length);
+
+      if (noiseGateActive) {
+        if (rms > GATE_THRESHOLD) {
+          gate.gain.setTargetAtTime(1, audioContext.currentTime, GATE_OPEN_TIME);
+        } else {
+          gate.gain.setTargetAtTime(0, audioContext.currentTime, GATE_CLOSE_TIME);
+        }
+      }
+
+      requestAnimationFrame(monitorNoiseGate);
+    }
+    monitorNoiseGate();
+
+    return destination.stream;
+  }
+
   async function joinVoice(channel) {
     try {
-      localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Get mic with browser-level noise suppression + echo cancellation
+      rawStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 48000,
+          channelCount: 1
+        }
+      });
+
+      // Process through Web Audio API pipeline
+      localStream = createAudioPipeline(rawStream);
       currentChannel = channel;
       voiceUsers.add(keyPair.publicKey);
 
@@ -257,6 +344,12 @@ const NostrVoice = (() => {
 
   function toggleMute() {
     isMuted = !isMuted;
+    // Mute the raw mic stream (source of the audio pipeline)
+    if (rawStream) {
+      rawStream.getAudioTracks().forEach(track => {
+        track.enabled = !isMuted;
+      });
+    }
     if (localStream) {
       localStream.getAudioTracks().forEach(track => {
         track.enabled = !isMuted;
@@ -275,6 +368,11 @@ const NostrVoice = (() => {
     // Also mute self when deafened
     if (isDeafened && !isMuted) {
       isMuted = true;
+      if (rawStream) {
+        rawStream.getAudioTracks().forEach(track => {
+          track.enabled = false;
+        });
+      }
       if (localStream) {
         localStream.getAudioTracks().forEach(track => {
           track.enabled = false;
@@ -303,10 +401,18 @@ const NostrVoice = (() => {
     }
     peers.clear();
 
-    // Stop local stream
+    // Stop local stream and audio processing
+    if (rawStream) {
+      rawStream.getTracks().forEach(track => track.stop());
+      rawStream = null;
+    }
     if (localStream) {
       localStream.getTracks().forEach(track => track.stop());
       localStream = null;
+    }
+    if (audioContext) {
+      audioContext.close().catch(() => {});
+      audioContext = null;
     }
 
     // Clean up audio elements
@@ -360,8 +466,12 @@ const NostrVoice = (() => {
         li.dataset.pubkey = pubkey;
         const isMe = pubkey === keyPair?.publicKey;
         const name = NostrChat ? NostrChat.getDisplayName(pubkey) : NostrCrypto.shortenPubkey(pubkey);
+        const avatar = NostrChat ? NostrChat.getAvatarUrl(pubkey) : null;
+        const avatarHtml = avatar
+          ? `<img class="avatar-img" src="${avatar}" style="width:20px;height:20px;border-radius:50%;">`
+          : `<span class="voice-indicator ${isMe && isMuted ? 'muted' : 'speaking'}">🎤</span>`;
         li.innerHTML = `
-          <span class="voice-indicator ${isMe && isMuted ? 'muted' : 'speaking'}">🎤</span>
+          ${avatarHtml}
           <span class="user-name" data-pubkey="${pubkey}">${name}</span>
           ${isMe ? '<span class="me-badge">(Du)</span>' : ''}
         `;

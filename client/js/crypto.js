@@ -109,6 +109,19 @@ const NostrCrypto = (() => {
     return localStorage.getItem('nostr_nickname') || null;
   }
 
+  // Avatar management
+  function setAvatar(dataUrl) {
+    if (dataUrl) {
+      localStorage.setItem('nostr_avatar', dataUrl);
+    } else {
+      localStorage.removeItem('nostr_avatar');
+    }
+  }
+
+  function getAvatar() {
+    return localStorage.getItem('nostr_avatar') || null;
+  }
+
   function shortenPubkey(pubkey) {
     return pubkey.slice(0, 8) + '...' + pubkey.slice(-4);
   }
@@ -121,6 +134,8 @@ const NostrCrypto = (() => {
     verifyEvent,
     setNickname,
     getNickname,
+    setAvatar,
+    getAvatar,
     shortenPubkey,
     bytesToHex,
     hexToBytes

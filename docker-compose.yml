@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  relay:
+    build: ./relay
+    ports:
+      - "8080:8080"
+    volumes:
+      - relay-data:/app/data
+    environment:
+      - PORT=8080
+      - DB_PATH=/app/data/relay.db
+    restart: unless-stopped
+
+volumes:
+  relay-data:

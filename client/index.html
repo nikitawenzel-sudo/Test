@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NOSTR-Discord</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- Setup Screen -->
+  <div id="setup-screen">
+    <div class="setup-card">
+      <h1>NOSTR-Discord</h1>
+      <p class="subtitle">Dezentraler Chat mit Voice &amp; Screen Share</p>
+
+      <label for="nickname-input">Nickname</label>
+      <input type="text" id="nickname-input" placeholder="Dein Nickname" maxlength="32" autofocus>
+
+      <label for="relay-input">Relay URL</label>
+      <input type="text" id="relay-input" value="ws://localhost:8080" placeholder="ws://localhost:8080">
+
+      <div class="pubkey-display" id="pubkey-display"></div>
+
+      <button id="connect-btn">Verbinden</button>
+    </div>
+  </div>
+
+  <!-- Main App -->
+  <div id="app">
+    <div class="app-layout">
+
+      <!-- Left Sidebar: Channels -->
+      <div class="sidebar">
+        <div class="sidebar-header">NOSTR-Discord</div>
+
+        <div class="channel-list">
+          <div class="channel-category">Text-Channels</div>
+          <div id="text-channels"></div>
+
+          <div class="channel-category">Voice-Channels</div>
+          <div id="voice-channels"></div>
+        </div>
+
+        <div class="new-channel">
+          <input type="text" id="new-channel-input" placeholder="+ Neuer Channel..." maxlength="32">
+        </div>
+
+        <!-- Voice controls -->
+        <div class="voice-controls" id="voice-controls">
+          <div class="voice-info">
+            <span class="voice-status">Voice verbunden</span>
+            <span class="voice-channel-name" id="voice-channel-name"></span>
+          </div>
+          <button class="voice-btn" id="btn-mute" title="Mute">&#x1F3A4;</button>
+          <button class="voice-btn" id="btn-deafen" title="Deafen">&#x1F50A;</button>
+          <button class="voice-btn" id="btn-screen" title="Screen Share">&#x1F4BB;</button>
+          <button class="voice-btn disconnect" id="btn-disconnect" title="Disconnect">&#x260E;</button>
+        </div>
+
+        <!-- User panel -->
+        <div class="user-panel">
+          <div class="user-avatar" id="user-avatar">?</div>
+          <div class="user-info">
+            <div class="user-name" id="user-name">-</div>
+            <div class="user-pubkey" id="user-pubkey-short">-</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Center: Chat -->
+      <div class="chat-area">
+        <div class="chat-header">
+          <span class="channel-hash">#</span>
+          <span id="current-channel-name">allgemein</span>
+        </div>
+
+        <div id="connection-status" class="connection-status disconnected">Verbinde...</div>
+
+        <div class="screen-share-container" id="screen-share-container">
+          <span class="screen-share-label" id="screen-share-label">Screen Share</span>
+          <video id="screen-share-video" autoplay playsinline></video>
+        </div>
+
+        <div class="messages" id="messages"></div>
+
+        <div class="chat-input-area">
+          <div class="chat-input-wrapper">
+            <input type="text" id="chat-input" placeholder="Nachricht an #allgemein" maxlength="4000">
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Sidebar: Members -->
+      <div class="members-sidebar">
+        <div class="members-header">Mitglieder</div>
+        <div class="members-list" id="members-list"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

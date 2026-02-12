@@ -15,7 +15,27 @@ const NostrVoice = (() => {
   const ICE_SERVERS = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' }
+    { urls: 'stun:stun2.l.google.com:19302' },
+    {
+      urls: 'turn:a.relay.metered.ca:80',
+      username: 'e8dd65b92f73a3e0bfa4d522',
+      credential: '5VoqBuvMSgKN0BIU'
+    },
+    {
+      urls: 'turn:a.relay.metered.ca:80?transport=tcp',
+      username: 'e8dd65b92f73a3e0bfa4d522',
+      credential: '5VoqBuvMSgKN0BIU'
+    },
+    {
+      urls: 'turn:a.relay.metered.ca:443',
+      username: 'e8dd65b92f73a3e0bfa4d522',
+      credential: '5VoqBuvMSgKN0BIU'
+    },
+    {
+      urls: 'turns:a.relay.metered.ca:443',
+      username: 'e8dd65b92f73a3e0bfa4d522',
+      credential: '5VoqBuvMSgKN0BIU'
+    }
   ];
 
   function init(keys) {

@@ -180,6 +180,7 @@ WEBRTC (VOICE & SCREEN SHARE):
 - Signaling (SDP/ICE-Austausch) laeuft ueber den Relay als kind:25000 Events
 - Diese Events werden NICHT gespeichert (nur weitergeleitet)
 - STUN-Server (Google) helfen beim NAT-Traversal
+- TURN-Server (metered.ca) leiten Daten wenn direktes P2P nicht klappt
 - Audio/Video-Daten fliessen direkt zwischen den Browsern
 
 ================================================================================
@@ -197,7 +198,8 @@ LOESUNG:
   - Browser muss Mikrofon-Zugriff erlauben
   - HTTPS erforderlich fuer Mikrofon (ausser localhost)
   - Beide User muessen im gleichen Voice-Channel sein
-  - Bei strengem NAT: TURN-Server noetig (siehe Erweiterungen)
+  - TURN-Server sind bereits eingebaut (metered.ca) fuer NAT-Traversal
+  - Chrome oder Edge empfohlen (nicht Safari)
 
 PROBLEM: "Screen Share startet nicht"
 LOESUNG:
@@ -228,9 +230,19 @@ LOESUNG:
 6. ERWEITERUNGSMOEGLICHKEITEN
 ================================================================================
 
+UEBERS INTERNET MIT KUMPEL NUTZEN (ngrok):
+  1. Relay starten: ./start.sh (oder: cd relay && node server.js)
+  2. ngrok installieren: https://ngrok.com/download
+  3. ngrok starten: ngrok http 8080
+  4. Die angezeigte URL (z.B. https://abc123.ngrok-free.app) umbauen:
+     https://... -> wss://...
+  5. Kumpel bekommt den client/ Ordner als ZIP
+  6. Beide tragen die gleiche wss:// URL als Relay ein
+  7. Fertig! Voice, Chat und Screen Share funktionieren uebers Internet
+
 FUER PRODUKTION:
 - WSS (WebSocket Secure) mit TLS-Zertifikat
-- TURN-Server (coturn) fuer NAT-Traversal bei Voice
+- Eigenen TURN-Server (coturn) fuer mehr Kontrolle
 - Rate-Limiting im Relay
 - Spam-Schutz (Proof-of-Work oder Web-of-Trust)
 - Verschluesselte DMs (NIP-04)

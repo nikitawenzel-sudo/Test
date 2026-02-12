@@ -5,6 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>NOSTR-Discord</title>
   <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "@noble/secp256k1": "https://cdn.jsdelivr.net/npm/@noble/secp256k1@2.1.0/+esm",
+      "@noble/hashes/sha256": "https://cdn.jsdelivr.net/npm/@noble/hashes@1.4.0/sha256/+esm",
+      "@noble/hashes/utils": "https://cdn.jsdelivr.net/npm/@noble/hashes@1.4.0/utils/+esm"
+    }
+  }
+  </script>
 </head>
 <body>
 
@@ -101,5 +110,18 @@
   </div>
 
   <script type="module" src="js/app.js"></script>
+  <script>
+    // Fehlererkennung: Wenn die Module nicht laden, zeige eine Fehlermeldung
+    window.addEventListener('load', function() {
+      setTimeout(function() {
+        var display = document.getElementById('pubkey-display');
+        if (display && !display.textContent.includes('Public Key:')) {
+          display.textContent = 'FEHLER: JavaScript-Module konnten nicht geladen werden. Druecke F12 und schau in die Konsole.';
+          display.style.color = '#ff4444';
+          display.style.fontSize = '14px';
+        }
+      }, 5000);
+    });
+  </script>
 </body>
 </html>

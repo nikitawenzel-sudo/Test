@@ -1,6 +1,6 @@
-import * as secp256k1 from 'https://esm.sh/@noble/secp256k1@2.1.0';
-import { sha256 } from 'https://esm.sh/@noble/hashes@1.4.0/sha256';
-import { bytesToHex, hexToBytes } from 'https://esm.sh/@noble/hashes@1.4.0/utils';
+import * as secp256k1 from '@noble/secp256k1';
+import { sha256 } from '@noble/hashes/sha256';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 
 const STORAGE_KEY = 'nostr-discord-keypair';
 

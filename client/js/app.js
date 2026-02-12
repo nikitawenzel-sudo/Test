@@ -50,8 +50,15 @@ const screenShareLabel = document.getElementById('screen-share-label');
 
 // Init: show pubkey on setup screen
 function initSetup() {
-  keyPair = loadOrCreateKeyPair();
-  pubkeyDisplay.textContent = 'Public Key: ' + keyPair.publicKey;
+  try {
+    keyPair = loadOrCreateKeyPair();
+    pubkeyDisplay.textContent = 'Public Key: ' + keyPair.publicKey;
+  } catch (err) {
+    console.error('Fehler beim Erstellen des Schluessels:', err);
+    pubkeyDisplay.textContent = 'FEHLER: ' + err.message;
+    pubkeyDisplay.style.color = '#ff4444';
+    return;
+  }
 
   const savedNick = localStorage.getItem('nostr-discord-nickname');
   if (savedNick) nicknameInput.value = savedNick;
@@ -62,20 +69,35 @@ function initSetup() {
 
 // Connect and start app
 connectBtn.addEventListener('click', () => {
-  nickname = nicknameInput.value.trim() || 'Anon';
-  const relayUrl = relayInput.value.trim();
+  try {
+    if (!keyPair) {
+      alert('Schluessel konnte nicht erstellt werden. Druecke F12 und schau in die Browser-Konsole.');
+      return;
+    }
 
-  if (!relayUrl) {
-    alert('Bitte eine Relay-URL eingeben');
-    return;
+    nickname = nicknameInput.value.trim() || 'Anon';
+    const relayUrl = relayInput.value.trim();
+
+    if (!relayUrl) {
+      alert('Bitte eine Relay-URL eingeben');
+      return;
+    }
+
+    connectBtn.textContent = 'Verbinde...';
+    connectBtn.disabled = true;
+
+    localStorage.setItem('nostr-discord-nickname', nickname);
+    localStorage.setItem('nostr-discord-relay', relayUrl);
+
+    nicknames.set(keyPair.publicKey, nickname);
+
+    startApp(relayUrl);
+  } catch (err) {
+    console.error('Verbindungsfehler:', err);
+    alert('Fehler: ' + err.message);
+    connectBtn.textContent = 'Verbinden';
+    connectBtn.disabled = false;
   }
-
-  localStorage.setItem('nostr-discord-nickname', nickname);
-  localStorage.setItem('nostr-discord-relay', relayUrl);
-
-  nicknames.set(keyPair.publicKey, nickname);
-
-  startApp(relayUrl);
 });
 
 // Allow Enter to connect

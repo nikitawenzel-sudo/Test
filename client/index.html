@@ -90,12 +90,41 @@
     </div>
   </div>
 
+  <!-- Server Settings Modal -->
+  <div id="server-settings-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <h2>Server-Einstellungen</h2>
+
+      <div class="form-group">
+        <label>Server-Icon</label>
+        <div class="avatar-upload" id="server-icon-upload">
+          <div class="avatar-preview" id="server-icon-preview">🌐</div>
+          <span class="avatar-upload-text">Icon aendern</span>
+          <input type="file" id="server-icon-input" accept="image/*" style="display:none">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="server-name-input">Server-Name</label>
+        <input type="text" id="server-name-input" placeholder="Mein Server..." maxlength="32">
+      </div>
+
+      <div class="modal-actions">
+        <button id="server-settings-save" class="btn-primary">Speichern</button>
+        <button id="server-settings-close" class="btn-secondary">Schliessen</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Main App Layout -->
   <div id="app" class="app-container">
     <!-- Left Sidebar: Channels -->
     <aside class="sidebar">
-      <div class="sidebar-header">
-        <h2>🌐 NOSTR Discord</h2>
+      <div class="sidebar-header" id="sidebar-header" title="Server-Einstellungen">
+        <div class="server-info">
+          <div class="server-icon" id="server-icon">🌐</div>
+          <h2 id="server-name">NOSTR Discord</h2>
+        </div>
         <span id="connection-status" class="status-indicator disconnected">🔴 Getrennt</span>
       </div>
 

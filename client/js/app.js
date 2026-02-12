@@ -41,6 +41,24 @@ const App = (() => {
     });
   }
 
+  function updateServerHeader() {
+    const serverName = localStorage.getItem('server_name') || 'NOSTR Discord';
+    const serverIcon = localStorage.getItem('server_icon');
+
+    const nameEl = document.getElementById('server-name');
+    const iconEl = document.getElementById('server-icon');
+
+    if (nameEl) nameEl.textContent = serverName;
+    if (iconEl) {
+      iconEl.innerHTML = serverIcon
+        ? `<img src="${serverIcon}">`
+        : '🌐';
+    }
+
+    // Update page title too
+    document.title = serverName;
+  }
+
   function updateMyAvatar() {
     const avatarEl = document.getElementById('my-avatar');
     const avatar = NostrCrypto.getAvatar();
@@ -134,6 +152,9 @@ const App = (() => {
     // Show avatar in user panel
     updateMyAvatar();
 
+    // Show server name and icon
+    updateServerHeader();
+
     // Initialize modules
     NostrChat.init(keyPair);
     NostrVoice.init(keyPair);
@@ -181,6 +202,9 @@ const App = (() => {
 
     // Setup settings
     setupSettings();
+
+    // Setup server settings
+    setupServerSettings();
 
     // Switch to default channel
     NostrChat.switchChannel('allgemein');
@@ -416,6 +440,59 @@ const App = (() => {
       modal.addEventListener('click', (e) => {
         if (e.target === modal) modal.style.display = 'none';
       });
+    });
+  }
+
+  function setupServerSettings() {
+    const sidebarHeader = document.getElementById('sidebar-header');
+    const serverModal = document.getElementById('server-settings-modal');
+    if (!sidebarHeader || !serverModal) return;
+
+    const serverIconUpload = document.getElementById('server-icon-upload');
+    const serverIconInput = document.getElementById('server-icon-input');
+    const serverIconPreview = document.getElementById('server-icon-preview');
+    const serverNameInput = document.getElementById('server-name-input');
+
+    // Setup icon upload (reuse existing avatar upload helper)
+    setupAvatarUpload(serverIconUpload, serverIconInput, serverIconPreview);
+
+    // Click header to open server settings
+    sidebarHeader.addEventListener('click', () => {
+      const currentName = localStorage.getItem('server_name') || 'NOSTR Discord';
+      const currentIcon = localStorage.getItem('server_icon');
+
+      serverNameInput.value = currentName;
+
+      if (currentIcon) {
+        serverIconPreview.innerHTML = `<img src="${currentIcon}">`;
+        serverIconPreview.classList.add('has-image');
+        serverIconPreview.dataset.avatar = currentIcon;
+      } else {
+        serverIconPreview.innerHTML = '🌐';
+        serverIconPreview.classList.remove('has-image');
+        delete serverIconPreview.dataset.avatar;
+      }
+
+      serverModal.style.display = 'flex';
+    });
+
+    document.getElementById('server-settings-close')?.addEventListener('click', () => {
+      serverModal.style.display = 'none';
+    });
+
+    document.getElementById('server-settings-save')?.addEventListener('click', () => {
+      const newName = serverNameInput.value.trim();
+      if (newName) {
+        localStorage.setItem('server_name', newName);
+      }
+
+      const newIcon = serverIconPreview.dataset.avatar;
+      if (newIcon) {
+        localStorage.setItem('server_icon', newIcon);
+      }
+
+      updateServerHeader();
+      serverModal.style.display = 'none';
     });
   }
 

@@ -103,6 +103,12 @@
         <small>⚠️ Niemals teilen! Dies ist deine Identität.</small>
       </div>
 
+      <div class="form-group">
+        <label>Notfall-Code</label>
+        <button id="settings-show-recovery" class="btn-small">&#128737;&#65039; Notfall-Code anzeigen</button>
+        <small>Zeigt deinen Recovery-Code nach Passwort-Bestaetigung.</small>
+      </div>
+
       <div class="modal-actions">
         <button id="settings-save" class="btn-primary">💾 Speichern</button>
         <button id="settings-close" class="btn-secondary">Schließen</button>
@@ -167,6 +173,7 @@
       </div>
 
       <button id="login-unlock" class="btn-primary">&#128275; Entsperren</button>
+      <button id="login-recover" class="btn-link" style="margin-top:12px;">Account wiederherstellen</button>
     </div>
   </div>
 
@@ -183,6 +190,70 @@
       </div>
 
       <button id="migration-save" class="btn-primary">&#128274; Key verschluesseln</button>
+    </div>
+  </div>
+
+  <!-- Recovery Code Display Modal (shown after setup) -->
+  <div id="recovery-modal" class="modal" style="display: none;">
+    <div class="modal-content setup-modal-content">
+      <h2>&#128737;&#65039; Dein Notfall-Code</h2>
+      <p class="subtitle">Schreib diesen Code auf und bewahre ihn sicher auf. Du brauchst ihn nur wenn du dein Passwort vergisst.</p>
+
+      <div id="recovery-code-display" class="recovery-code"></div>
+
+      <button id="recovery-copy" class="btn-secondary" style="margin-top:12px;">&#128203; Kopieren</button>
+
+      <label class="checkbox-label" style="margin-top:16px;">
+        <input type="checkbox" id="recovery-confirm">
+        Ich habe den Code gespeichert
+      </label>
+
+      <button id="recovery-continue" class="btn-primary" disabled>Weiter</button>
+    </div>
+  </div>
+
+  <!-- Restore Account Modal (from login screen) -->
+  <div id="restore-modal" class="modal" style="display: none;">
+    <div class="modal-content setup-modal-content">
+      <h2>&#128260; Account wiederherstellen</h2>
+      <p class="subtitle">Gib deinen Notfall-Code ein</p>
+
+      <div class="form-group">
+        <label for="restore-code">Notfall-Code</label>
+        <input type="text" id="restore-code" class="recovery-input" placeholder="XXXX-XXXX-XXXX-..." autocomplete="off" spellcheck="false">
+        <div id="restore-error" class="form-error" style="display:none;">Ungueltiger Code (Pruefsumme fehlgeschlagen)</div>
+      </div>
+
+      <div class="form-group">
+        <label for="restore-password">Neues Passwort</label>
+        <input type="password" id="restore-password" placeholder="Neues Passwort waehlen...">
+        <div id="restore-strength" class="password-strength"></div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="restore-submit" class="btn-primary">Wiederherstellen</button>
+        <button id="restore-cancel" class="btn-secondary">Abbrechen</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Recovery View Modal (from settings, requires password) -->
+  <div id="recovery-view-modal" class="modal" style="display: none;">
+    <div class="modal-content setup-modal-content">
+      <h2>&#128737;&#65039; Notfall-Code anzeigen</h2>
+
+      <div id="recovery-view-auth">
+        <div class="form-group">
+          <label for="recovery-view-password">Passwort bestaetigen</label>
+          <input type="password" id="recovery-view-password" placeholder="Dein Passwort...">
+          <div id="recovery-view-error" class="form-error" style="display:none;">Falsches Passwort</div>
+        </div>
+        <button id="recovery-view-unlock" class="btn-primary">Anzeigen</button>
+      </div>
+
+      <div id="recovery-view-code" class="recovery-code" style="display:none;"></div>
+
+      <button id="recovery-view-close" class="btn-secondary" style="margin-top:12px;">Schliessen</button>
     </div>
   </div>
 

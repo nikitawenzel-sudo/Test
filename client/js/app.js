@@ -161,6 +161,12 @@ const App = (() => {
       errorEl.style.display = 'none';
       passwordInput.classList.remove('error');
     });
+
+    // Recovery button on login screen
+    const recoverBtn = document.getElementById('login-recover');
+    if (recoverBtn) {
+      recoverBtn.addEventListener('click', () => showRestoreModal());
+    }
   }
 
   // ====== MIGRATION MODAL (encrypt existing plaintext key) ======
@@ -200,7 +206,9 @@ const App = (() => {
 
       keyPair = NostrCrypto.createKeyPair(existingKey);
       modal.style.display = 'none';
-      checkRoomPassword();
+
+      // Show recovery code after migration
+      showRecoveryCode(existingKey, () => checkRoomPassword());
     };
 
     saveBtn.addEventListener('click', doMigrate);
@@ -327,11 +335,197 @@ const App = (() => {
 
       keyPair = NostrCrypto.createKeyPair(privateKey);
       modal.style.display = 'none';
-      await startApp();
+
+      // Show recovery code before starting app
+      showRecoveryCode(privateKey, () => startApp());
     });
 
     nickInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') startBtn.click();
+    });
+  }
+
+  // ====== RECOVERY CODE DISPLAY (after setup) ======
+
+  function showRecoveryCode(privateKeyHex, onContinue) {
+    const modal = document.getElementById('recovery-modal');
+    if (!modal) {
+      // No modal element, skip recovery display
+      if (onContinue) onContinue();
+      return;
+    }
+
+    const code = NostrCrypto.generateRecoveryCode(privateKeyHex);
+    const codeDisplay = document.getElementById('recovery-code-display');
+    const copyBtn = document.getElementById('recovery-copy');
+    const confirmCb = document.getElementById('recovery-confirm');
+    const continueBtn = document.getElementById('recovery-continue');
+
+    codeDisplay.textContent = code;
+    confirmCb.checked = false;
+    continueBtn.disabled = true;
+
+    modal.style.display = 'flex';
+
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText(code);
+      copyBtn.textContent = '\u2705 Kopiert!';
+      setTimeout(() => { copyBtn.textContent = '\u{1F4CB} Kopieren'; }, 2000);
+    });
+
+    confirmCb.addEventListener('change', () => {
+      continueBtn.disabled = !confirmCb.checked;
+    });
+
+    continueBtn.addEventListener('click', () => {
+      modal.style.display = 'none';
+      if (onContinue) onContinue();
+    });
+  }
+
+  // ====== RESTORE ACCOUNT (from recovery code) ======
+
+  function showRestoreModal() {
+    const modal = document.getElementById('restore-modal');
+    if (!modal) return;
+
+    // Close login modal if open
+    const loginModal = document.getElementById('login-modal');
+    if (loginModal) loginModal.style.display = 'none';
+
+    modal.style.display = 'flex';
+
+    const codeInput = document.getElementById('restore-code');
+    const passwordInput = document.getElementById('restore-password');
+    const strengthEl = document.getElementById('restore-strength');
+    const submitBtn = document.getElementById('restore-submit');
+    const cancelBtn = document.getElementById('restore-cancel');
+    const errorEl = document.getElementById('restore-error');
+
+    // Auto-format recovery code input with dashes
+    codeInput.addEventListener('input', () => {
+      const cursor = codeInput.selectionStart;
+      const raw = codeInput.value.replace(/[^23456789A-HJ-NP-Za-hj-np-z]/g, '').toUpperCase();
+      const formatted = raw.match(/.{1,4}/g)?.join('-') || '';
+      codeInput.value = formatted;
+      // Try to maintain cursor position
+      const dashesBeforeCursor = (formatted.slice(0, cursor).match(/-/g) || []).length;
+      const rawBeforeCursor = (codeInput.value.slice(0, cursor).replace(/-/g, '') || '').length;
+      const newCursor = rawBeforeCursor + Math.floor(rawBeforeCursor / 4);
+      codeInput.setSelectionRange(Math.min(newCursor + dashesBeforeCursor, formatted.length), Math.min(newCursor + dashesBeforeCursor, formatted.length));
+      errorEl.style.display = 'none';
+    });
+
+    passwordInput.addEventListener('input', () => {
+      updatePasswordStrength(passwordInput.value, strengthEl);
+    });
+
+    const doRestore = async () => {
+      const code = codeInput.value;
+      const password = passwordInput.value;
+
+      if (!code) {
+        codeInput.classList.add('error');
+        return;
+      }
+      if (!password) {
+        passwordInput.classList.add('error');
+        return;
+      }
+
+      // Decode and validate recovery code
+      const privateKey = NostrCrypto.recoverFromCode(code);
+      if (!privateKey) {
+        errorEl.style.display = 'block';
+        codeInput.classList.add('error');
+        return;
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Verschluessele...';
+
+      // Encrypt with new password
+      await NostrCrypto.encryptPrivateKey(privateKey, password);
+
+      keyPair = NostrCrypto.createKeyPair(privateKey);
+      modal.style.display = 'none';
+      checkRoomPassword();
+    };
+
+    submitBtn.addEventListener('click', doRestore);
+    codeInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') passwordInput.focus();
+    });
+    passwordInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') doRestore();
+    });
+
+    cancelBtn.addEventListener('click', () => {
+      modal.style.display = 'none';
+      // Re-show login modal
+      showLoginModal();
+    });
+  }
+
+  // ====== RECOVERY VIEW (from settings, password required) ======
+
+  function showRecoveryView() {
+    const modal = document.getElementById('recovery-view-modal');
+    if (!modal) return;
+
+    const authSection = document.getElementById('recovery-view-auth');
+    const codeDisplay = document.getElementById('recovery-view-code');
+    const passwordInput = document.getElementById('recovery-view-password');
+    const unlockBtn = document.getElementById('recovery-view-unlock');
+    const errorEl = document.getElementById('recovery-view-error');
+    const closeBtn = document.getElementById('recovery-view-close');
+
+    // Reset state
+    authSection.style.display = 'block';
+    codeDisplay.style.display = 'none';
+    codeDisplay.textContent = '';
+    passwordInput.value = '';
+    errorEl.style.display = 'none';
+
+    modal.style.display = 'flex';
+
+    const doUnlock = async () => {
+      const password = passwordInput.value;
+      if (!password) {
+        passwordInput.classList.add('error');
+        return;
+      }
+
+      unlockBtn.disabled = true;
+      unlockBtn.textContent = 'Entschluessele...';
+
+      const privateKey = await NostrCrypto.decryptPrivateKey(password);
+      if (!privateKey) {
+        errorEl.style.display = 'block';
+        passwordInput.classList.add('error');
+        unlockBtn.disabled = false;
+        unlockBtn.textContent = 'Anzeigen';
+        return;
+      }
+
+      const code = NostrCrypto.generateRecoveryCode(privateKey);
+      authSection.style.display = 'none';
+      codeDisplay.textContent = code;
+      codeDisplay.style.display = 'block';
+      unlockBtn.disabled = false;
+      unlockBtn.textContent = 'Anzeigen';
+    };
+
+    unlockBtn.addEventListener('click', doUnlock);
+    passwordInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') doUnlock();
+      errorEl.style.display = 'none';
+      passwordInput.classList.remove('error');
+    });
+
+    closeBtn.addEventListener('click', () => {
+      codeDisplay.textContent = '';
+      modal.style.display = 'none';
     });
   }
 
@@ -664,6 +858,11 @@ const App = (() => {
 
       document.getElementById('settings-copy-pubkey')?.addEventListener('click', () => {
         navigator.clipboard.writeText(keyPair.publicKey);
+      });
+
+      document.getElementById('settings-show-recovery')?.addEventListener('click', () => {
+        settingsModal.style.display = 'none';
+        showRecoveryView();
       });
     }
 

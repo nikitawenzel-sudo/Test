@@ -371,6 +371,80 @@ const NostrCrypto = (() => {
     return { privateKey: privateKeyHex, publicKey };
   }
 
+  // ====== RECOVERY CODE (Base32 with checksum) ======
+
+  const RECOVERY_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+  // 31 chars (no 0,O,1,I,L) - used as base-31 encoding
+
+  function generateRecoveryCode(privateKeyHex) {
+    const keyBytes = hexToBytes(privateKeyHex);
+    // 2-byte SHA-256 checksum
+    const hash = getHashes().sha256(keyBytes);
+    const checksum = hash.slice(0, 2);
+
+    // Combine: 32 bytes key + 2 bytes checksum = 34 bytes
+    const combined = new Uint8Array(34);
+    combined.set(keyBytes);
+    combined.set(checksum, 32);
+
+    // Encode as big integer in base-31
+    const base = BigInt(RECOVERY_ALPHABET.length);
+    let num = 0n;
+    for (const b of combined) {
+      num = num * 256n + BigInt(b);
+    }
+
+    let encoded = '';
+    while (num > 0n) {
+      encoded = RECOVERY_ALPHABET[Number(num % base)] + encoded;
+      num = num / base;
+    }
+
+    // Pad to 56 chars (14 groups of 4) for consistent length
+    while (encoded.length < 56) {
+      encoded = RECOVERY_ALPHABET[0] + encoded;
+    }
+
+    // Format in 4-char groups with dashes
+    return encoded.match(/.{1,4}/g).join('-');
+  }
+
+  function recoverFromCode(code) {
+    // Remove dashes and whitespace, uppercase
+    const clean = code.replace(/[-\s]/g, '').toUpperCase();
+
+    // Validate characters
+    for (const c of clean) {
+      if (RECOVERY_ALPHABET.indexOf(c) === -1) return null;
+    }
+
+    // Decode from base-31 to big integer
+    const base = BigInt(RECOVERY_ALPHABET.length);
+    let num = 0n;
+    for (const c of clean) {
+      num = num * base + BigInt(RECOVERY_ALPHABET.indexOf(c));
+    }
+
+    // Convert to 34 bytes
+    const combined = new Uint8Array(34);
+    for (let i = 33; i >= 0; i--) {
+      combined[i] = Number(num % 256n);
+      num = num / 256n;
+    }
+
+    // Extract key (32 bytes) and checksum (2 bytes)
+    const keyBytes = combined.slice(0, 32);
+    const checksum = combined.slice(32, 34);
+
+    // Verify checksum
+    const hash = getHashes().sha256(keyBytes);
+    if (hash[0] !== checksum[0] || hash[1] !== checksum[1]) {
+      return null; // Checksum mismatch
+    }
+
+    return bytesToHex(keyBytes);
+  }
+
   return {
     generatePrivateKey,
     getPublicKey,
@@ -398,6 +472,9 @@ const NostrCrypto = (() => {
     hasPlaintextKey,
     getStoredPubkey,
     getPasswordStrength,
+    // Recovery Code
+    generateRecoveryCode,
+    recoverFromCode,
     // Management
     setNickname,
     getNickname,

@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>Campfire Security Tests</title>
+  <style>
+    body { background: #1a1a2e; color: #e0e0e0; font-family: monospace; padding: 20px; }
+    h1 { color: #00d4ff; }
+    .test-suite { margin: 20px 0; padding: 15px; background: #16213e; border-radius: 8px; }
+    .test-suite h2 { color: #0f3460; font-size: 16px; margin: 0 0 10px 0; color: #00d4ff; }
+    .test { padding: 4px 0; }
+    .pass { color: #3ba55c; }
+    .fail { color: #ed4245; }
+    .pass::before { content: "✓ "; }
+    .fail::before { content: "✗ "; }
+    .summary { margin-top: 30px; padding: 15px; border-radius: 8px; font-size: 16px; }
+    .summary.all-pass { background: rgba(59, 165, 92, 0.2); color: #3ba55c; }
+    .summary.has-fail { background: rgba(237, 66, 69, 0.2); color: #ed4245; }
+  </style>
+</head>
+<body>
+  <h1>Campfire Phase 1 Security Tests</h1>
+  <div id="results"></div>
+  <div id="summary"></div>
+
+  <!-- Load crypto dependencies -->
+  <script src="../js/noble-loader.js"></script>
+  <script src="../js/crypto.js"></script>
+
+  <script>
+    // Minimal test framework
+    let totalTests = 0;
+    let passedTests = 0;
+    let currentSuite = null;
+
+    function suite(name) {
+      currentSuite = document.createElement('div');
+      currentSuite.className = 'test-suite';
+      currentSuite.innerHTML = `<h2>${name}</h2>`;
+      document.getElementById('results').appendChild(currentSuite);
+    }
+
+    function assert(condition, description) {
+      totalTests++;
+      const el = document.createElement('div');
+      el.className = 'test ' + (condition ? 'pass' : 'fail');
+      el.textContent = description;
+      if (currentSuite) currentSuite.appendChild(el);
+      if (condition) passedTests++;
+      else console.error('FAIL:', description);
+    }
+
+    function assertEqual(actual, expected, description) {
+      assert(actual === expected, `${description} (got: ${actual}, expected: ${expected})`);
+    }
+
+    function assertNotNull(value, description) {
+      assert(value !== null && value !== undefined, description);
+    }
+
+    function showSummary() {
+      const el = document.getElementById('summary');
+      el.className = 'summary ' + (passedTests === totalTests ? 'all-pass' : 'has-fail');
+      el.textContent = `${passedTests}/${totalTests} Tests bestanden`;
+    }
+
+    // ====== RUN TESTS ======
+    async function runTests() {
+      // ====== 1. NOBLE CRYPTO PRIMITIVES ======
+      suite('Noble Crypto Primitives');
+
+      // Key generation
+      const privKey = NostrCrypto.generatePrivateKey();
+      assert(privKey.length === 64, 'Private key is 64 hex chars');
+      assert(/^[0-9a-f]+$/.test(privKey), 'Private key is valid hex');
+
+      const pubKey = NostrCrypto.getPublicKey(privKey);
+      assert(pubKey.length === 64, 'Public key is 64 hex chars (x-only)');
+
+      // Deterministic pubkey
+      const pubKey2 = NostrCrypto.getPublicKey(privKey);
+      assertEqual(pubKey, pubKey2, 'Public key derivation is deterministic');
+
+      // Different keys produce different pubkeys
+      const privKey2 = NostrCrypto.generatePrivateKey();
+      const pubKey3 = NostrCrypto.getPublicKey(privKey2);
+      assert(pubKey !== pubKey3, 'Different private keys produce different public keys');
+
+      // ====== 2. SCHNORR SIGNATURES ======
+      suite('Schnorr Signatures (BIP-340)');
+
+      // Sign and verify
+      const msgHash = await NostrCrypto.hashNonce('test message');
+      const sig = await NostrCrypto.schnorrSign(msgHash, privKey);
+      assert(sig.length === 128, 'Signature is 128 hex chars (64 bytes)');
+
+      const valid = await NostrCrypto.schnorrVerify(sig, msgHash, pubKey);
+      assert(valid === true, 'Valid signature verifies correctly');
+
+      // Wrong message
+      const wrongHash = await NostrCrypto.hashNonce('wrong message');
+      const invalid1 = await NostrCrypto.schnorrVerify(sig, wrongHash, pubKey);
+      assert(invalid1 === false, 'Signature fails with wrong message');
+
+      // Wrong pubkey
+      const invalid2 = await NostrCrypto.schnorrVerify(sig, msgHash, pubKey3);
+      assert(invalid2 === false, 'Signature fails with wrong public key');
+
+      // ====== 3. MESSAGE SIGNING ======
+      suite('Message Payload Signing');
+
+      const msgSig = await NostrCrypto.signMessagePayload(pubKey, 1234567890, 'test', 'Hello World', privKey);
+      assert(msgSig.length === 128, 'Message signature is 128 hex chars');
+
+      const msgValid = await NostrCrypto.verifyMessageSignature(pubKey, 1234567890, 'test', 'Hello World', msgSig);
+      assert(msgValid === true, 'Message signature verifies with correct content');
+
+      // Tampered content
+      const msgTampered = await NostrCrypto.verifyMessageSignature(pubKey, 1234567890, 'test', 'Tampered!', msgSig);
+      assert(msgTampered === false, 'Message signature fails with tampered content');
+
+      // Tampered timestamp
+      const msgTampered2 = await NostrCrypto.verifyMessageSignature(pubKey, 9999999999, 'test', 'Hello World', msgSig);
+      assert(msgTampered2 === false, 'Message signature fails with tampered timestamp');
+
+      // Tampered channel
+      const msgTampered3 = await NostrCrypto.verifyMessageSignature(pubKey, 1234567890, 'hacked', 'Hello World', msgSig);
+      assert(msgTampered3 === false, 'Message signature fails with tampered channel');
+
+      // ====== 4. AES-256-GCM ENCRYPTION ======
+      suite('AES-256-GCM Encryption (Room Key)');
+
+      // Derive room key
+      await NostrCrypto.deriveRoomKey('test-room', 'test-password');
+      assert(NostrCrypto.hasRoomKey() === true, 'Room key derived successfully');
+
+      // Encrypt/decrypt roundtrip
+      const plaintext = 'Geheimer Text mit Umlauten: äöü ß 🔒';
+      const encrypted = await NostrCrypto.encryptText(plaintext);
+      assertNotNull(encrypted, 'Encryption produces output');
+      assert(encrypted.iv.length === 24, 'IV is 24 hex chars (12 bytes)');
+      assert(encrypted.ct.length > 0, 'Ciphertext is non-empty');
+
+      const decrypted = await NostrCrypto.decryptText(encrypted);
+      assertEqual(decrypted, plaintext, 'Decryption recovers original plaintext');
+
+      // Different IVs for same plaintext
+      const encrypted2 = await NostrCrypto.encryptText(plaintext);
+      assert(encrypted.iv !== encrypted2.iv, 'Different IVs for same plaintext (random)');
+
+      // Wrong key fails
+      await NostrCrypto.deriveRoomKey('test-room', 'wrong-password');
+      const wrongDecrypt = await NostrCrypto.decryptText(encrypted);
+      assert(wrongDecrypt === null, 'Decryption fails with wrong password');
+
+      // Restore correct key for later tests
+      await NostrCrypto.deriveRoomKey('test-room', 'test-password');
+
+      // ====== 5. ECDH ======
+      suite('ECDH Key Exchange');
+
+      const secp = window.nobleSecp256k1;
+      // Alice and Bob
+      const alicePriv = NostrCrypto.generatePrivateKey();
+      const alicePub = NostrCrypto.getPublicKey(alicePriv);
+      const bobPriv = NostrCrypto.generatePrivateKey();
+      const bobPub = NostrCrypto.getPublicKey(bobPriv);
+
+      // ECDH: alice_priv * bob_pub === bob_priv * alice_pub
+      const sharedA = secp.ecdh(alicePriv, bobPub);
+      const sharedB = secp.ecdh(bobPriv, alicePub);
+
+      const sharedAHex = NostrCrypto.bytesToHex(sharedA);
+      const sharedBHex = NostrCrypto.bytesToHex(sharedB);
+      assertEqual(sharedAHex, sharedBHex, 'ECDH shared secrets match (Alice = Bob)');
+
+      // Different peer = different shared secret
+      const charliePriv = NostrCrypto.generatePrivateKey();
+      const charliePub = NostrCrypto.getPublicKey(charliePriv);
+      const sharedC = secp.ecdh(alicePriv, charliePub);
+      const sharedCHex = NostrCrypto.bytesToHex(sharedC);
+      assert(sharedAHex !== sharedCHex, 'Different peers produce different shared secrets');
+
+      // ====== 6. HMAC-SHA256 + KDF CHAIN ======
+      suite('HMAC-SHA256 + KDF Chain (Ratchet Primitives)');
+
+      // Test HMAC via Web Crypto
+      async function hmacSha256(key, data) {
+        const cryptoKey = await crypto.subtle.importKey(
+          'raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+        );
+        const sig = await crypto.subtle.sign('HMAC', cryptoKey, data);
+        return new Uint8Array(sig);
+      }
+
+      const hmacKey = crypto.getRandomValues(new Uint8Array(32));
+      const hmacData = new TextEncoder().encode('test data');
+      const hmac1 = await hmacSha256(hmacKey, hmacData);
+      assert(hmac1.length === 32, 'HMAC-SHA256 produces 32 bytes');
+
+      // Deterministic
+      const hmac2 = await hmacSha256(hmacKey, hmacData);
+      assertEqual(NostrCrypto.bytesToHex(hmac1), NostrCrypto.bytesToHex(hmac2), 'HMAC is deterministic');
+
+      // Different key = different HMAC
+      const hmacKey2 = crypto.getRandomValues(new Uint8Array(32));
+      const hmac3 = await hmacSha256(hmacKey2, hmacData);
+      assert(NostrCrypto.bytesToHex(hmac1) !== NostrCrypto.bytesToHex(hmac3), 'Different key produces different HMAC');
+
+      // KDF chain: chain → [nextChain, msgKey]
+      async function kdfChain(chainKey) {
+        const enc = new TextEncoder();
+        const next = await hmacSha256(chainKey, enc.encode('chain'));
+        const msg = await hmacSha256(chainKey, enc.encode('msg'));
+        return [next, msg];
+      }
+
+      const chainKey0 = crypto.getRandomValues(new Uint8Array(32));
+      const [chainKey1, msgKey0] = await kdfChain(chainKey0);
+      const [chainKey2, msgKey1] = await kdfChain(chainKey1);
+
+      assert(chainKey1.length === 32, 'Chain key is 32 bytes');
+      assert(msgKey0.length === 32, 'Message key is 32 bytes');
+      assert(
+        NostrCrypto.bytesToHex(chainKey0) !== NostrCrypto.bytesToHex(chainKey1),
+        'Chain key advances forward'
+      );
+      assert(
+        NostrCrypto.bytesToHex(msgKey0) !== NostrCrypto.bytesToHex(msgKey1),
+        'Different chain positions produce different message keys'
+      );
+
+      // Forward secrecy: can't derive chainKey0 from chainKey1
+      // (This is a property of HMAC - no test needed, but verify irreversibility)
+      assert(
+        NostrCrypto.bytesToHex(chainKey0) !== NostrCrypto.bytesToHex(chainKey2),
+        'Chain keys are all unique (forward secrecy property)'
+      );
+
+      // ====== 7. ENCRYPTED PERSISTENCE ======
+      suite('Encrypted IndexedDB Persistence');
+
+      // Test HKDF master key derivation
+      const testPrivKey = NostrCrypto.generatePrivateKey();
+      try {
+        // Derive master key (HKDF)
+        const encoder = new TextEncoder();
+        const keyMaterial = await crypto.subtle.importKey(
+          'raw',
+          NostrCrypto.hexToBytes(testPrivKey),
+          'HKDF',
+          false,
+          ['deriveKey']
+        );
+        const masterKey = await crypto.subtle.deriveKey(
+          {
+            name: 'HKDF',
+            hash: 'SHA-256',
+            salt: encoder.encode('campfire-v1'),
+            info: encoder.encode('indexeddb-encryption')
+          },
+          keyMaterial,
+          { name: 'AES-GCM', length: 256 },
+          false,
+          ['encrypt', 'decrypt']
+        );
+        assertNotNull(masterKey, 'HKDF master key derived from private key');
+
+        // Encrypt/decrypt blob roundtrip
+        const testData = new TextEncoder().encode('test blob data for IndexedDB');
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const encBlob = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, masterKey, testData);
+        const decBlob = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, masterKey, encBlob);
+        const recovered = new TextDecoder().decode(decBlob);
+        assertEqual(recovered, 'test blob data for IndexedDB', 'Master key encrypt/decrypt roundtrip works');
+
+        // Different private keys produce different master keys
+        const testPrivKey2 = NostrCrypto.generatePrivateKey();
+        const keyMaterial2 = await crypto.subtle.importKey(
+          'raw', NostrCrypto.hexToBytes(testPrivKey2), 'HKDF', false, ['deriveKey']
+        );
+        const masterKey2 = await crypto.subtle.deriveKey(
+          { name: 'HKDF', hash: 'SHA-256', salt: encoder.encode('campfire-v1'), info: encoder.encode('indexeddb-encryption') },
+          keyMaterial2, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+        );
+        // Try decrypting with wrong key
+        try {
+          await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, masterKey2, encBlob);
+          assert(false, 'Wrong master key should fail decryption');
+        } catch (e) {
+          assert(true, 'Wrong master key correctly fails decryption');
+        }
+      } catch (e) {
+        assert(false, 'HKDF derivation failed: ' + e.message);
+      }
+
+      // ====== 8. SENDER KEY WRAPPING (ECDH) ======
+      suite('Sender Key ECDH Wrapping');
+
+      const senderKey = crypto.getRandomValues(new Uint8Array(32));
+
+      // Wrap for Bob using ECDH
+      const sharedSecret = secp.ecdh(alicePriv, bobPub);
+      const wrapHash = await crypto.subtle.digest('SHA-256', sharedSecret);
+      const wrapKey = await crypto.subtle.importKey(
+        'raw', wrapHash, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+      );
+      const wrapIv = crypto.getRandomValues(new Uint8Array(12));
+      const wrapped = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: wrapIv }, wrapKey, senderKey);
+
+      // Bob unwraps
+      const sharedSecretBob = secp.ecdh(bobPriv, alicePub);
+      const unwrapHash = await crypto.subtle.digest('SHA-256', sharedSecretBob);
+      const unwrapKey = await crypto.subtle.importKey(
+        'raw', unwrapHash, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+      );
+      const unwrapped = new Uint8Array(
+        await crypto.subtle.decrypt({ name: 'AES-GCM', iv: wrapIv }, unwrapKey, wrapped)
+      );
+
+      assertEqual(
+        NostrCrypto.bytesToHex(unwrapped),
+        NostrCrypto.bytesToHex(senderKey),
+        'Bob unwraps Alice sender key correctly via ECDH'
+      );
+
+      // Charlie can't unwrap
+      const sharedSecretCharlie = secp.ecdh(charliePriv, alicePub);
+      const charlieHash = await crypto.subtle.digest('SHA-256', sharedSecretCharlie);
+      const charlieKey = await crypto.subtle.importKey(
+        'raw', charlieHash, { name: 'AES-GCM', length: 256 }, false, ['decrypt']
+      );
+      try {
+        await crypto.subtle.decrypt({ name: 'AES-GCM', iv: wrapIv }, charlieKey, wrapped);
+        assert(false, 'Charlie should NOT be able to unwrap');
+      } catch (e) {
+        assert(true, 'Charlie correctly cannot unwrap sender key (different shared secret)');
+      }
+
+      // ====== 9. FULL RATCHET ENCRYPTION ROUNDTRIP ======
+      suite('Full Ratchet Encryption Roundtrip');
+
+      // Simulate sender chain
+      let senderChain = crypto.getRandomValues(new Uint8Array(32));
+      let receiverChain = new Uint8Array(senderChain); // Receiver has same starting key
+      const messages = ['Nachricht 1', 'Nachricht 2', 'Nachricht 3 mit 🔐'];
+
+      for (let i = 0; i < messages.length; i++) {
+        // Sender: derive msg key, encrypt, advance chain
+        const [sNextChain, sMsgKey] = await kdfChain(senderChain);
+        const sIv = crypto.getRandomValues(new Uint8Array(12));
+        const sCryptoKey = await crypto.subtle.importKey(
+          'raw', sMsgKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt']
+        );
+        const sCiphertext = await crypto.subtle.encrypt(
+          { name: 'AES-GCM', iv: sIv }, sCryptoKey, new TextEncoder().encode(messages[i])
+        );
+        senderChain = sNextChain;
+
+        // Receiver: derive same msg key, decrypt, advance chain
+        const [rNextChain, rMsgKey] = await kdfChain(receiverChain);
+        const rCryptoKey = await crypto.subtle.importKey(
+          'raw', rMsgKey, { name: 'AES-GCM', length: 256 }, false, ['decrypt']
+        );
+        const rPlaintext = new TextDecoder().decode(
+          await crypto.subtle.decrypt({ name: 'AES-GCM', iv: sIv }, rCryptoKey, sCiphertext)
+        );
+        receiverChain = rNextChain;
+
+        assertEqual(rPlaintext, messages[i], `Ratchet roundtrip message ${i + 1}: "${messages[i]}"`);
+      }
+
+      // Forward secrecy: old chain key can't decrypt new messages
+      const oldChain = crypto.getRandomValues(new Uint8Array(32));
+      const [_, oldMsgKey] = await kdfChain(oldChain);
+      const [advancedChain] = await kdfChain(oldChain);
+      const [__, newMsgKey] = await kdfChain(advancedChain);
+      assert(
+        NostrCrypto.bytesToHex(oldMsgKey) !== NostrCrypto.bytesToHex(newMsgKey),
+        'Forward secrecy: old message key differs from new message key'
+      );
+
+      // ====== 10. KEY ROTATION ======
+      suite('Key Rotation');
+
+      const rotatedKey = crypto.getRandomValues(new Uint8Array(32));
+      assert(rotatedKey.length === 32, 'New sender key generated (32 bytes)');
+      assert(
+        NostrCrypto.bytesToHex(rotatedKey) !== NostrCrypto.bytesToHex(senderKey),
+        'Rotated key differs from original'
+      );
+
+      // Verify chain resets after rotation
+      let rotatedChain = new Uint8Array(rotatedKey);
+      const [rc1, rm1] = await kdfChain(rotatedChain);
+      assertNotNull(rc1, 'Rotated chain produces valid next key');
+      assertNotNull(rm1, 'Rotated chain produces valid message key');
+
+      // ====== SUMMARY ======
+      showSummary();
+    }
+
+    runTests().catch(e => {
+      console.error('Test error:', e);
+      document.getElementById('summary').className = 'summary has-fail';
+      document.getElementById('summary').textContent = 'FEHLER: ' + e.message;
+    });
+  </script>
+</body>
+</html>

@@ -187,9 +187,6 @@ const NostrChat = (() => {
       keyPair.publicKey, created_at, currentChannel, content, keyPair.privateKey
     );
 
-    // Encrypt the content with room key (if available)
-    const encrypted = await NostrCrypto.encryptText(content);
-
     const msg = {
       id: keyPair.publicKey.slice(0, 8) + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
       pubkey: keyPair.publicKey,
@@ -198,12 +195,24 @@ const NostrChat = (() => {
       sig: sig // Schnorr signature over plaintext
     };
 
-    if (encrypted) {
-      // E2E encrypted: only ciphertext stored in CRDT
-      msg.encrypted = encrypted;
-    } else {
-      // No room password: plaintext (with signature for authenticity)
-      msg.content = content;
+    // Layer 1: Ratchet encryption (forward secrecy) if available
+    if (Ratchet.getChainIndex() >= 0) {
+      try {
+        const ratcheted = await Ratchet.encrypt(content);
+        msg.ratchet = ratcheted; // { iv, ct, ci }
+      } catch (e) {
+        console.warn('Ratchet encrypt failed, falling back to room key:', e);
+      }
+    }
+
+    // Layer 2: Room key encryption (if no ratchet or as fallback)
+    if (!msg.ratchet) {
+      const encrypted = await NostrCrypto.encryptText(content);
+      if (encrypted) {
+        msg.encrypted = encrypted;
+      } else {
+        msg.content = content;
+      }
     }
 
     const yMessages = P2P.getMessages(currentChannel);
@@ -219,20 +228,26 @@ const NostrChat = (() => {
 
     let content = null;
     let isEncrypted = false;
+    let isRatcheted = false;
     let decryptFailed = false;
     let sigValid = false;
     let hasSig = !!msg.sig;
 
-    // Step 1: Decrypt if encrypted
-    if (msg.encrypted) {
+    // Step 1: Decrypt - try ratchet first, then room key, then plaintext
+    if (msg.ratchet) {
+      isRatcheted = true;
+      isEncrypted = true;
+      content = await Ratchet.decrypt(msg.pubkey, msg.ratchet);
+      if (content === null) {
+        decryptFailed = true;
+      }
+    } else if (msg.encrypted) {
       isEncrypted = true;
       content = await NostrCrypto.decryptText(msg.encrypted);
       if (content === null) {
         decryptFailed = true;
-        content = null;
       }
     } else if (msg.content) {
-      // Legacy plaintext message
       content = msg.content;
     }
 
@@ -256,10 +271,12 @@ const NostrChat = (() => {
 
     // Security badges
     let badges = '';
-    if (isEncrypted && !decryptFailed) {
+    if (isRatcheted && !decryptFailed) {
+      badges += '<span class="badge badge-ratchet" title="Forward Secrecy (Sender Key Ratchet)">&#128737;</span>';
+    } else if (isEncrypted && !decryptFailed) {
       badges += '<span class="badge badge-encrypted" title="E2E verschluesselt">&#128274;</span>';
     } else if (isEncrypted && decryptFailed) {
-      badges += '<span class="badge badge-decrypt-failed" title="Entschluesselung fehlgeschlagen - falsches Passwort?">&#128275;</span>';
+      badges += '<span class="badge badge-decrypt-failed" title="Entschluesselung fehlgeschlagen">&#128275;</span>';
     }
     if (hasSig && sigValid) {
       badges += '<span class="badge badge-verified" title="Signatur verifiziert">&#10003;</span>';

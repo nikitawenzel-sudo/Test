@@ -4,7 +4,7 @@
 const P2P = (() => {
   let room = null;
   let ydoc = null;
-  let provider = null; // y-indexeddb persistence
+  let provider = null; // EncryptedPersistence provider
   let keyPair = null;
   let roomId = null;
   let peers = new Map(); // peerId -> { pubkey, nickname, avatar, verified }
@@ -26,6 +26,9 @@ const P2P = (() => {
   let sendChallengeResp = null;
   let pendingChallenges = new Map(); // peerId -> nonce (hex)
   let verifiedPeers = new Set(); // Set of verified peerIds
+
+  // Sender Key Exchange actions
+  let sendSenderKey = null;
 
   // Stream handling
   let voiceStreamCallbacks = [];
@@ -49,14 +52,13 @@ const P2P = (() => {
     // Initialize Yjs document
     ydoc = new window.Yjs.Doc();
 
-    // IndexedDB persistence
-    provider = new window.YIndexeddb.IndexeddbPersistence('nostr-p2p-' + roomId, ydoc);
-    await new Promise(resolve => {
-      provider.on('synced', () => {
-        console.log('IndexedDB synced');
-        resolve();
-      });
-    });
+    // Encrypted IndexedDB persistence (replaces y-indexeddb)
+    provider = await EncryptedPersistence.bind(ydoc, roomId, keyPair.privateKey);
+    console.log('Encrypted persistence bound');
+
+    // Initialize Ratchet for forward secrecy
+    Ratchet.init(keyPair, provider);
+    await Ratchet.restoreState();
 
     // Join Trystero room via NOSTR relays for signaling
     const config = {
@@ -80,6 +82,20 @@ const P2P = (() => {
     // Setup challenge-response actions
     [sendChallenge, room._recvChallenge] = room.makeAction('auth-challenge');
     [sendChallengeResp, room._recvChallengeResp] = room.makeAction('auth-resp');
+
+    // Setup sender key exchange action
+    let recvSenderKey;
+    [sendSenderKey, recvSenderKey] = room.makeAction('sender-key');
+
+    // Handle incoming sender keys (for forward secrecy)
+    recvSenderKey(async (data, peerId) => {
+      try {
+        const msg = JSON.parse(typeof data === 'string' ? data : new TextDecoder().decode(new Uint8Array(data)));
+        await Ratchet.receiveSenderKey(msg.pubkey, msg.wrappedKey, msg.chainIndex);
+      } catch (e) {
+        console.error('Sender key receive error:', e);
+      }
+    });
 
     // ====== CHALLENGE-RESPONSE PROTOCOL ======
 
@@ -128,6 +144,14 @@ const P2P = (() => {
             avatar: peerInfo?.avatar,
             verified: true
           }));
+
+          // Send our sender key to verified peer (forward secrecy)
+          try {
+            const senderKeyMsg = await Ratchet.getSenderKeyForPeer(resp.pubkey);
+            sendSenderKey(JSON.stringify(senderKeyMsg), peerId);
+          } catch (e) {
+            console.error('Sender key send error:', e);
+          }
         } else {
           console.warn('Peer FAILED verification:', peerId);
           const peerInfo = peers.get(peerId);

@@ -893,6 +893,12 @@ html, body {
   line-height: 1;
 }
 
+.badge-ratchet {
+  color: var(--green);
+  font-size: 12px;
+  text-shadow: 0 0 4px rgba(59, 165, 92, 0.4);
+}
+
 .badge-encrypted {
   color: var(--green);
   font-size: 12px;

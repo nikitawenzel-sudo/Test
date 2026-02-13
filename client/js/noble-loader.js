@@ -338,6 +338,17 @@
     }
   }
 
+  // ECDH on secp256k1: shared_secret = SHA-256(their_pub * my_priv).x
+  function ecdh(privateKeyHex, publicKeyXOnlyBytes) {
+    const d = bytesToBigInt(hexToBytes(typeof privateKeyHex === 'string' ? privateKeyHex : bytesToHex(privateKeyHex)));
+    const pubBytes = typeof publicKeyXOnlyBytes === 'string' ? hexToBytes(publicKeyXOnlyBytes) : publicKeyXOnlyBytes;
+    const px = bytesToBigInt(pubBytes);
+    const py = liftX(px);
+    const P = new Point(px, py);
+    const shared = P.multiply(d);
+    return bigIntToBytes(shared.x);
+  }
+
   window.nobleSecp256k1 = {
     getPublicKey: (privKey, compressed) => {
       const pubBytes = getPublicKey(typeof privKey === 'string' ? privKey : bytesToHex(privKey));
@@ -359,6 +370,9 @@
         const pubBytes = typeof publicKey === 'string' ? hexToBytes(publicKey) : publicKey;
         return schnorrVerify(sigBytes, msgBytes, pubBytes);
       }
+    },
+    ecdh: (privateKeyHex, publicKeyXOnly) => {
+      return ecdh(privateKeyHex, publicKeyXOnly);
     },
     etc: {
       hmacSha256Sync: null,

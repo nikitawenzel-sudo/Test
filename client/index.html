@@ -229,9 +229,7 @@
     import * as Y from 'https://esm.sh/yjs';
     window.Yjs = Y;
 
-    // Import y-indexeddb (local persistence)
-    import { IndexeddbPersistence } from 'https://esm.sh/y-indexeddb';
-    window.YIndexeddb = { IndexeddbPersistence };
+    // y-indexeddb replaced by EncryptedPersistence (encrypted at rest)
 
     // Once CDN libs are loaded, load app scripts in sequence
     async function loadScript(src) {
@@ -247,6 +245,8 @@
     try {
       await loadScript('js/noble-loader.js');
       await loadScript('js/crypto.js');
+      await loadScript('js/encrypted-persistence.js');
+      await loadScript('js/ratchet.js');
       await loadScript('js/p2p.js');
       await loadScript('js/chat.js');
       await loadScript('js/voice.js');

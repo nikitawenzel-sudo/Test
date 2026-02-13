@@ -1,4 +1,6 @@
 // app.js - Main Application Logic (P2P Version)
+// Task 1.1: Private Key is now encrypted with user password (PBKDF2 + AES-256-GCM)
+// Key is only held in memory after login, never stored in plaintext
 
 const App = (() => {
   let keyPair = null;
@@ -70,27 +72,158 @@ const App = (() => {
     }
   }
 
-  async function init() {
-    const hasKey = localStorage.getItem('nostr_privkey');
-    const hasNick = localStorage.getItem('nostr_nickname');
-    const savedRoom = localStorage.getItem('nostr_room');
+  // ====== PASSWORD STRENGTH UI HELPER ======
 
+  function updatePasswordStrength(password, strengthEl) {
+    if (!strengthEl) return;
+    const strength = NostrCrypto.getPasswordStrength(password);
+    const labels = { weak: 'Schwach', okay: 'Okay', strong: 'Stark' };
+    strengthEl.className = 'password-strength ' + strength;
+
+    // Find or create the label element
+    let labelEl = strengthEl.nextElementSibling;
+    if (!labelEl || !labelEl.classList.contains('password-strength-label')) {
+      labelEl = document.createElement('div');
+      labelEl.className = 'password-strength-label';
+      strengthEl.parentNode.insertBefore(labelEl, strengthEl.nextSibling);
+    }
+    labelEl.className = 'password-strength-label ' + strength;
+    labelEl.textContent = password ? labels[strength] : '';
+  }
+
+  // ====== INIT: Determine which flow to use ======
+
+  async function init() {
+    const savedRoom = localStorage.getItem('nostr_room');
     if (savedRoom) roomId = savedRoom;
 
-    if (!hasKey || !hasNick) {
-      showSetupModal();
-    } else if (!NostrCrypto.getRoomPassword()) {
-      // Key exists but no password in session - show password prompt
-      showPasswordPrompt();
+    if (NostrCrypto.hasEncryptedIdentity()) {
+      // Encrypted identity exists → show login modal
+      showLoginModal();
+    } else if (NostrCrypto.hasPlaintextKey()) {
+      // Plaintext key found → needs migration to encrypted storage
+      showMigrationModal();
     } else {
-      await startApp();
+      // Fresh setup → create new identity
+      showSetupModal();
     }
   }
 
-  function showPasswordPrompt() {
+  // ====== LOGIN MODAL (decrypt existing encrypted identity) ======
+
+  function showLoginModal() {
+    const modal = document.getElementById('login-modal');
+    if (!modal) {
+      // Fallback if modal element missing
+      showSetupModal();
+      return;
+    }
+    modal.style.display = 'flex';
+
+    // Show welcome message with nickname
+    const nickname = NostrCrypto.getNickname();
+    const welcomeEl = document.getElementById('login-welcome');
+    if (welcomeEl && nickname) {
+      welcomeEl.textContent = 'Willkommen zurueck, ' + nickname + '!';
+    }
+
+    const passwordInput = document.getElementById('login-password');
+    const unlockBtn = document.getElementById('login-unlock');
+    const errorEl = document.getElementById('login-error');
+
+    const doUnlock = async () => {
+      const password = passwordInput.value;
+      if (!password) {
+        passwordInput.classList.add('error');
+        return;
+      }
+
+      unlockBtn.disabled = true;
+      unlockBtn.textContent = 'Entschluessele...';
+
+      const privateKey = await NostrCrypto.decryptPrivateKey(password);
+      if (!privateKey) {
+        errorEl.style.display = 'block';
+        passwordInput.classList.add('error');
+        unlockBtn.disabled = false;
+        unlockBtn.textContent = '\u{1F513} Entsperren';
+        return;
+      }
+
+      keyPair = NostrCrypto.createKeyPair(privateKey);
+      modal.style.display = 'none';
+      checkRoomPassword();
+    };
+
+    unlockBtn.addEventListener('click', doUnlock);
+    passwordInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') doUnlock();
+      errorEl.style.display = 'none';
+      passwordInput.classList.remove('error');
+    });
+  }
+
+  // ====== MIGRATION MODAL (encrypt existing plaintext key) ======
+
+  function showMigrationModal() {
+    const modal = document.getElementById('migration-modal');
+    if (!modal) {
+      // Fallback: start with legacy flow
+      keyPair = NostrCrypto.loadOrCreateKeyPair();
+      checkRoomPassword();
+      return;
+    }
+    modal.style.display = 'flex';
+
+    const passwordInput = document.getElementById('migration-password');
+    const saveBtn = document.getElementById('migration-save');
+    const strengthEl = document.getElementById('migration-strength');
+
+    passwordInput.addEventListener('input', () => {
+      updatePasswordStrength(passwordInput.value, strengthEl);
+    });
+
+    const doMigrate = async () => {
+      const password = passwordInput.value;
+      if (!password) {
+        passwordInput.classList.add('error');
+        return;
+      }
+
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Verschluessele...';
+
+      // Read existing plaintext key before it gets deleted
+      const existingKey = localStorage.getItem('nostr_privkey');
+      // Encrypt and store (also removes plaintext key from localStorage)
+      await NostrCrypto.encryptPrivateKey(existingKey, password);
+
+      keyPair = NostrCrypto.createKeyPair(existingKey);
+      modal.style.display = 'none';
+      checkRoomPassword();
+    };
+
+    saveBtn.addEventListener('click', doMigrate);
+    passwordInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') doMigrate();
+    });
+  }
+
+  // ====== ROOM PASSWORD CHECK (after identity is unlocked) ======
+
+  function checkRoomPassword() {
+    if (NostrCrypto.getRoomPassword()) {
+      // Room password already in sessionStorage
+      startApp();
+    } else {
+      // Ask for room password (E2E encryption)
+      showRoomPasswordPrompt();
+    }
+  }
+
+  function showRoomPasswordPrompt() {
     const modal = document.getElementById('password-modal');
     if (!modal) {
-      // Fallback: start without encryption
       startApp();
       return;
     }
@@ -119,13 +252,17 @@ const App = (() => {
     });
   }
 
+  // ====== SETUP MODAL (new identity with encrypted key) ======
+
   function showSetupModal() {
     const modal = document.getElementById('setup-modal');
     modal.style.display = 'flex';
 
     const roomInput = document.getElementById('setup-room');
-    const passwordInput = document.getElementById('setup-password');
+    const roomPasswordInput = document.getElementById('setup-password');
     const nickInput = document.getElementById('setup-nickname');
+    const identityPasswordInput = document.getElementById('setup-identity-password');
+    const strengthEl = document.getElementById('setup-password-strength');
     const startBtn = document.getElementById('setup-start');
     const importKeyInput = document.getElementById('setup-import-key');
     const avatarUpload = document.getElementById('setup-avatar-upload');
@@ -136,6 +273,13 @@ const App = (() => {
 
     setupAvatarUpload(avatarUpload, avatarInput, avatarPreview);
 
+    // Password strength indicator
+    if (identityPasswordInput && strengthEl) {
+      identityPasswordInput.addEventListener('input', () => {
+        updatePasswordStrength(identityPasswordInput.value, strengthEl);
+      });
+    }
+
     startBtn.addEventListener('click', async () => {
       const nickname = nickInput.value.trim();
       if (!nickname) {
@@ -143,26 +287,45 @@ const App = (() => {
         return;
       }
 
+      const identityPassword = identityPasswordInput ? identityPasswordInput.value : '';
+      if (!identityPassword) {
+        if (identityPasswordInput) identityPasswordInput.classList.add('error');
+        return;
+      }
+
       roomId = roomInput.value.trim() || roomId;
       localStorage.setItem('nostr_room', roomId);
 
       // Save room password in sessionStorage (cleared on tab close)
-      const password = passwordInput.value.trim();
-      if (password) {
-        NostrCrypto.setRoomPassword(password);
+      const roomPassword = roomPasswordInput.value.trim();
+      if (roomPassword) {
+        NostrCrypto.setRoomPassword(roomPassword);
       }
 
+      // Generate or import private key
+      let privateKey;
       const importKey = importKeyInput.value.trim();
       if (importKey && importKey.length === 64) {
-        localStorage.setItem('nostr_privkey', importKey);
+        privateKey = importKey;
+      } else {
+        privateKey = NostrCrypto.generatePrivateKey();
       }
 
+      // Save nickname first (needed by encryptPrivateKey)
+      NostrCrypto.setNickname(nickname);
+
+      // Avatar
       const avatarData = avatarPreview.dataset.avatar;
       if (avatarData) {
         NostrCrypto.setAvatar(avatarData);
       }
 
-      NostrCrypto.setNickname(nickname);
+      // Encrypt and store private key (removes any plaintext key)
+      startBtn.disabled = true;
+      startBtn.textContent = 'Verschluessele...';
+      await NostrCrypto.encryptPrivateKey(privateKey, identityPassword);
+
+      keyPair = NostrCrypto.createKeyPair(privateKey);
       modal.style.display = 'none';
       await startApp();
     });
@@ -172,9 +335,14 @@ const App = (() => {
     });
   }
 
+  // ====== START APP (keyPair must be set before calling) ======
+
   async function startApp() {
-    // Load keys
-    keyPair = NostrCrypto.loadOrCreateKeyPair();
+    // keyPair should already be set from login/setup/migration
+    if (!keyPair) {
+      console.error('startApp called without keyPair');
+      return;
+    }
     console.log('Public Key:', keyPair.publicKey);
 
     // Update UI with pubkey

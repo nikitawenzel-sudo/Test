@@ -28,6 +28,13 @@
       </div>
 
       <div class="form-group">
+        <label for="setup-identity-password">Passwort (schuetzt deinen Private Key)</label>
+        <input type="password" id="setup-identity-password" placeholder="Passwort waehlen...">
+        <div id="setup-password-strength" class="password-strength"></div>
+        <small>Dein Private Key wird mit diesem Passwort verschluesselt gespeichert.</small>
+      </div>
+
+      <div class="form-group">
         <label for="setup-room">Room-ID (gleiche ID = gleicher Raum)</label>
         <input type="text" id="setup-room" placeholder="nostr-discord-default">
         <small>Alle mit der gleichen Room-ID sind im selben Chat</small>
@@ -144,6 +151,38 @@
         <button id="prompt-unlock" class="btn-primary">&#128274; Entsperren</button>
         <button id="prompt-skip" class="btn-secondary">Ohne E2E fortfahren</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Identity Login Modal (shown on reload when encrypted identity exists) -->
+  <div id="login-modal" class="modal" style="display: none;">
+    <div class="modal-content setup-modal-content">
+      <h2>&#128274; Campfire</h2>
+      <p class="subtitle" id="login-welcome">Gib dein Passwort ein um fortzufahren</p>
+
+      <div class="form-group">
+        <label for="login-password">Passwort</label>
+        <input type="password" id="login-password" placeholder="Dein Passwort..." autofocus>
+        <div id="login-error" class="form-error" style="display:none;">Falsches Passwort</div>
+      </div>
+
+      <button id="login-unlock" class="btn-primary">&#128275; Entsperren</button>
+    </div>
+  </div>
+
+  <!-- Migration Modal (shown when plaintext key needs encryption) -->
+  <div id="migration-modal" class="modal" style="display: none;">
+    <div class="modal-content setup-modal-content">
+      <h2>&#128274; Sicherheits-Update</h2>
+      <p class="subtitle">Wir haben die Sicherheit verbessert. Bitte waehle ein Passwort um deinen Private Key zu schuetzen.</p>
+
+      <div class="form-group">
+        <label for="migration-password">Neues Passwort</label>
+        <input type="password" id="migration-password" placeholder="Passwort waehlen..." autofocus>
+        <div id="migration-strength" class="password-strength"></div>
+      </div>
+
+      <button id="migration-save" class="btn-primary">&#128274; Key verschluesseln</button>
     </div>
   </div>
 

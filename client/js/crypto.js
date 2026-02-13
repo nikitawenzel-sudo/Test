@@ -258,10 +258,124 @@ const NostrCrypto = (() => {
     return pubkey.slice(0, 8) + '...' + pubkey.slice(-4);
   }
 
+  // ====== PRIVATE KEY ENCRYPTION (PBKDF2 + AES-256-GCM) ======
+
+  const IDENTITY_PBKDF2_ITERATIONS = 600000;
+
+  // Encrypt private key with password and store in localStorage
+  async function encryptPrivateKey(privateKeyHex, password) {
+    const encoder = new TextEncoder();
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+
+    const keyMaterial = await crypto.subtle.importKey(
+      'raw', encoder.encode(password), 'PBKDF2', false, ['deriveKey']
+    );
+
+    const encryptionKey = await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt, iterations: IDENTITY_PBKDF2_ITERATIONS, hash: 'SHA-256' },
+      keyMaterial,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt']
+    );
+
+    const encrypted = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv },
+      encryptionKey,
+      hexToBytes(privateKeyHex)
+    );
+
+    const pubkey = getPublicKey(privateKeyHex);
+
+    const identity = {
+      encryptedKey: bytesToHex(new Uint8Array(encrypted)),
+      salt: bytesToHex(salt),
+      iv: bytesToHex(iv),
+      pubkey: pubkey,
+      nickname: getNickname() || ''
+    };
+
+    localStorage.setItem('nostr_identity', JSON.stringify(identity));
+    localStorage.setItem('nostr_pubkey', pubkey);
+    // Remove plaintext key if it exists
+    localStorage.removeItem('nostr_privkey');
+
+    return identity;
+  }
+
+  // Decrypt private key with password (returns hex string or null on wrong password)
+  async function decryptPrivateKey(password) {
+    const stored = localStorage.getItem('nostr_identity');
+    if (!stored) return null;
+
+    const identity = JSON.parse(stored);
+    const encoder = new TextEncoder();
+
+    const keyMaterial = await crypto.subtle.importKey(
+      'raw', encoder.encode(password), 'PBKDF2', false, ['deriveKey']
+    );
+
+    const encryptionKey = await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: hexToBytes(identity.salt), iterations: IDENTITY_PBKDF2_ITERATIONS, hash: 'SHA-256' },
+      keyMaterial,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['decrypt']
+    );
+
+    try {
+      const decrypted = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: hexToBytes(identity.iv) },
+        encryptionKey,
+        hexToBytes(identity.encryptedKey)
+      );
+      return bytesToHex(new Uint8Array(decrypted));
+    } catch (e) {
+      return null; // Wrong password
+    }
+  }
+
+  // Check if an encrypted identity exists in localStorage
+  function hasEncryptedIdentity() {
+    return !!localStorage.getItem('nostr_identity');
+  }
+
+  // Check if a plaintext key exists (needs migration)
+  function hasPlaintextKey() {
+    return !!localStorage.getItem('nostr_privkey');
+  }
+
+  // Get stored pubkey without needing the private key
+  function getStoredPubkey() {
+    const stored = localStorage.getItem('nostr_identity');
+    if (stored) {
+      try { return JSON.parse(stored).pubkey; } catch (e) { /* ignore */ }
+    }
+    return localStorage.getItem('nostr_pubkey') || null;
+  }
+
+  // Password strength evaluation
+  function getPasswordStrength(password) {
+    if (!password || password.length < 8) return 'weak';
+    const hasNumbers = /\d/.test(password);
+    const hasSpecial = /[^a-zA-Z0-9]/.test(password);
+    if (password.length >= 12 && hasSpecial) return 'strong';
+    if (password.length >= 8 && hasNumbers) return 'okay';
+    return 'weak';
+  }
+
+  // Create key pair from a decrypted private key in memory (no localStorage for privkey)
+  function createKeyPair(privateKeyHex) {
+    const publicKey = getPublicKey(privateKeyHex);
+    return { privateKey: privateKeyHex, publicKey };
+  }
+
   return {
     generatePrivateKey,
     getPublicKey,
     loadOrCreateKeyPair,
+    createKeyPair,
     signEvent,
     verifyEvent,
     // E2E Encryption
@@ -277,6 +391,13 @@ const NostrCrypto = (() => {
     schnorrVerify,
     randomNonce,
     hashNonce,
+    // Private Key Encryption
+    encryptPrivateKey,
+    decryptPrivateKey,
+    hasEncryptedIdentity,
+    hasPlaintextKey,
+    getStoredPubkey,
+    getPasswordStrength,
     // Management
     setNickname,
     getNickname,

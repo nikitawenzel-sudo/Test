@@ -965,6 +965,45 @@ html, body {
   color: var(--yellow);
 }
 
+/* ====== Password Strength Indicator ====== */
+.password-strength {
+  height: 4px;
+  border-radius: 2px;
+  margin-top: 6px;
+  transition: width 0.3s, background 0.3s;
+  width: 0;
+}
+
+.password-strength.weak {
+  width: 33%;
+  background: var(--red);
+}
+
+.password-strength.okay {
+  width: 66%;
+  background: var(--yellow);
+}
+
+.password-strength.strong {
+  width: 100%;
+  background: var(--green);
+}
+
+.password-strength-label {
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.password-strength-label.weak { color: var(--red); }
+.password-strength-label.okay { color: var(--yellow); }
+.password-strength-label.strong { color: var(--green); }
+
+.form-error {
+  color: var(--red);
+  font-size: 13px;
+  margin-top: 6px;
+}
+
 /* ====== Animations ====== */
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(10px); }

@@ -3,6 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src 'self' https://esm.sh;
+    style-src 'self' 'unsafe-inline';
+    connect-src *;
+    img-src 'self' data: blob:;
+    media-src 'self' blob:;
+    object-src 'none';
+    base-uri 'self';
+    frame-src 'none';
+  ">
   <title>NOSTR Discord</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
@@ -329,48 +340,7 @@
     </aside>
   </div>
 
-  <!-- P2P CDN Dependencies: Load as ES modules, then set globals -->
-  <script type="module">
-    // Import Trystero (NOSTR strategy for peer discovery)
-    import { joinRoom } from 'https://esm.sh/trystero/nostr';
-    window.trysteroJoinRoom = joinRoom;
-
-    // Import Yjs (CRDT for conflict-free data sync)
-    import * as Y from 'https://esm.sh/yjs';
-    window.Yjs = Y;
-
-    // y-indexeddb replaced by EncryptedPersistence (encrypted at rest)
-
-    // Once CDN libs are loaded, load app scripts in sequence
-    async function loadScript(src) {
-      return new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = src;
-        script.onload = resolve;
-        script.onerror = reject;
-        document.body.appendChild(script);
-      });
-    }
-
-    try {
-      await loadScript('js/noble-loader.js');
-      await loadScript('js/crypto.js');
-      await loadScript('js/encrypted-persistence.js');
-      await loadScript('js/ratchet.js');
-      await loadScript('js/p2p.js');
-      await loadScript('js/chat.js');
-      await loadScript('js/voice.js');
-      await loadScript('js/screenshare.js');
-      await loadScript('js/app.js');
-      console.log('All P2P modules loaded successfully');
-    } catch (e) {
-      console.error('Failed to load modules:', e);
-      document.body.innerHTML = '<div style="color:white;padding:40px;text-align:center;">' +
-        '<h2>Fehler beim Laden</h2>' +
-        '<p>CDN-Bibliotheken konnten nicht geladen werden. Bitte Internetverbindung pruefen.</p>' +
-        '<p style="color:#888;font-size:12px;">' + e.message + '</p>' +
-        '</div>';
-    }
-  </script>
+  <!-- P2P CDN Dependencies: External module for CSP compliance (no inline scripts) -->
+  <script type="module" src="js/bootstrap.mjs"></script>
 </body>
 </html>

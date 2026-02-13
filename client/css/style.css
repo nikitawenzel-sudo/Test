@@ -1057,6 +1057,62 @@ html, body {
   color: var(--header-primary);
 }
 
+/* ====== Room Status Bar ====== */
+
+.room-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.status-peers {
+  color: var(--text-secondary);
+}
+
+.status-peers.online {
+  color: var(--green);
+}
+
+.status-peers.connecting {
+  color: var(--yellow);
+}
+
+.status-peers.offline {
+  color: var(--red);
+}
+
+.status-encryption.encrypted {
+  color: var(--green);
+}
+
+.status-encryption.unencrypted {
+  color: var(--text-muted);
+}
+
+/* ====== Message Delivery Status ====== */
+
+.msg-delivery {
+  font-size: 11px;
+  margin-left: 4px;
+  opacity: 0.6;
+}
+
+.msg-delivery.pending {
+  color: var(--text-muted);
+}
+
+.msg-delivery.sent {
+  color: var(--text-secondary);
+}
+
+.msg-delivery.delivered {
+  color: var(--green);
+}
+
 /* ====== Share Link ====== */
 
 .share-link-input {

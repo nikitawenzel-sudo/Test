@@ -219,6 +219,37 @@ const NostrChat = (() => {
     if (yMessages) {
       yMessages.push([msg]);
     }
+
+    // Update delivery status after a tick (once rendered)
+    setTimeout(() => updateDeliveryStatus(msg.id), 50);
+  }
+
+  // Update delivery status for a sent message
+  function updateDeliveryStatus(msgId) {
+    const msgEl = document.querySelector(`.message[data-msg-id="${msgId}"]`);
+    if (!msgEl) return;
+
+    const deliveryEl = msgEl.querySelector('.msg-delivery');
+    if (!deliveryEl) return;
+
+    const peerCount = P2P.getPeerCount();
+    if (peerCount === 0) {
+      deliveryEl.className = 'msg-delivery pending';
+      deliveryEl.textContent = '\u23F3';
+      deliveryEl.title = 'Kein Peer verbunden';
+    } else {
+      deliveryEl.className = 'msg-delivery sent';
+      deliveryEl.textContent = '\u2713';
+      deliveryEl.title = 'Gesendet';
+      // Mark as delivered after Yjs sync (short delay for propagation)
+      setTimeout(() => {
+        if (deliveryEl && P2P.getPeerCount() > 0) {
+          deliveryEl.className = 'msg-delivery delivered';
+          deliveryEl.textContent = '\u2713\u2713';
+          deliveryEl.title = 'Zugestellt';
+        }
+      }, 2000);
+    }
   }
 
   // Async render: decrypt + verify + display
@@ -310,6 +341,7 @@ const NostrChat = (() => {
           <span class="msg-author" data-pubkey="${msg.pubkey}">${escapeHtml(displayName)}</span>
           <span class="msg-badges">${badges}</span>
           <span class="msg-time" title="${dateStr}">${timeStr}</span>
+          ${isOwn ? '<span class="msg-delivery sent" title="Gesendet">&#10003;</span>' : ''}
         </div>
         <div class="message-content">${displayContent}</div>
       </div>

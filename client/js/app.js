@@ -1049,12 +1049,38 @@ const App = (() => {
 
     statusEl.className = 'status-indicator ' + status;
     const labels = {
-      connected: `🟢 P2P (${peerCount} Peer${peerCount !== 1 ? 's' : ''}, ${verifiedCount} verifiziert)`,
-      connecting: '🟡 Verbinde...',
-      disconnected: '🔴 Getrennt',
-      waiting: '🟡 Warte auf Peers...'
+      connected: `\u{1F7E2} P2P (${peerCount} Peer${peerCount !== 1 ? 's' : ''}, ${verifiedCount} verifiziert)`,
+      connecting: '\u{1F7E1} Verbinde...',
+      disconnected: '\u{1F534} Getrennt',
+      waiting: '\u{1F7E1} Warte auf Peers...'
     };
     statusEl.textContent = labels[status] || status;
+
+    // Update room status bar
+    updateRoomStatusBar(status, peerCount);
+  }
+
+  function updateRoomStatusBar(status, peerCount) {
+    const peersEl = document.getElementById('room-status-peers');
+    const encEl = document.getElementById('room-status-encryption');
+    if (!peersEl) return;
+
+    if (status === 'connected' && peerCount > 0) {
+      peersEl.className = 'status-peers online';
+      peersEl.textContent = `\u{1F7E2} ${peerCount} online`;
+    } else if (status === 'connecting' || status === 'waiting') {
+      peersEl.className = 'status-peers connecting';
+      peersEl.textContent = '\u{1F7E1} Verbinde...';
+    } else {
+      peersEl.className = 'status-peers offline';
+      peersEl.textContent = '\u{1F534} Offline';
+    }
+
+    if (encEl) {
+      const hasKey = NostrCrypto.hasRoomKey();
+      encEl.className = 'status-encryption ' + (hasKey ? 'encrypted' : 'unencrypted');
+      encEl.textContent = hasKey ? '\u{1F512} Verschluesselt' : '\u{1F513} Klartext';
+    }
   }
 
   function updateEncryptionStatus(encrypted) {

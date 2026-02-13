@@ -1,34 +1,41 @@
-// chat.js - Text Chat Logic
+// chat.js - Text Chat Logic (P2P / Yjs CRDT)
 
 const NostrChat = (() => {
   let currentChannel = 'allgemein';
-  let currentSubId = null;
   let keyPair = null;
-  let messageSet = new Set(); // Track event IDs to avoid duplicates
+  let renderedMessages = new Set(); // Track rendered message IDs to avoid duplicates
   let nicknameCache = {}; // pubkey -> nickname
   let avatarCache = {}; // pubkey -> avatar data URL
+  let observer = null; // Current Yjs observer
 
   const DEFAULT_CHANNELS = ['allgemein', 'gaming', 'random', 'musik', 'dev'];
 
   function init(keys) {
     keyPair = keys;
-    // Subscribe to metadata events (kind 0 = nickname + avatar)
-    NostrRelay.subscribe(
-      { kinds: [0] },
-      (event) => {
-        try {
-          const meta = JSON.parse(event.content);
-          if (meta.name) {
-            nicknameCache[event.pubkey] = meta.name;
-          }
-          if (meta.picture) {
-            avatarCache[event.pubkey] = meta.picture;
-          }
-          updateDisplayedUser(event.pubkey);
-          updateOnlineUser(event.pubkey);
-        } catch (e) {}
+
+    // Listen for metadata updates from P2P peers
+    P2P.onMetaUpdate((pubkey, meta) => {
+      if (meta.nickname) {
+        nicknameCache[pubkey] = meta.nickname;
       }
-    );
+      if (meta.avatar) {
+        avatarCache[pubkey] = meta.avatar;
+      }
+      updateDisplayedUser(pubkey);
+      updateOnlineUser(pubkey);
+    });
+
+    // When a peer joins, add them to online list
+    P2P.onPeerJoin(peerId => {
+      // Metadata will come through onMetaUpdate
+    });
+
+    // When a peer leaves, remove from online list
+    P2P.onPeerLeave((peerId, peerInfo) => {
+      if (peerInfo && peerInfo.pubkey) {
+        removeOnlineUser(peerInfo.pubkey);
+      }
+    });
   }
 
   function updateDisplayedUser(pubkey) {
@@ -88,6 +95,13 @@ const NostrChat = (() => {
     `;
   }
 
+  function removeOnlineUser(pubkey) {
+    const onlineList = document.getElementById('online-users');
+    if (!onlineList) return;
+    const item = onlineList.querySelector(`.user-item[data-pubkey="${pubkey}"]`);
+    if (item) item.remove();
+  }
+
   function getDisplayName(pubkey) {
     if (nicknameCache[pubkey]) return nicknameCache[pubkey];
     return NostrCrypto.shortenPubkey(pubkey);
@@ -103,7 +117,7 @@ const NostrChat = (() => {
     }
   }
 
-  async function publishNickname(nickname) {
+  function publishNickname(nickname) {
     NostrCrypto.setNickname(nickname);
     nicknameCache[keyPair.publicKey] = nickname;
 
@@ -112,27 +126,21 @@ const NostrChat = (() => {
       avatarCache[keyPair.publicKey] = avatar;
     }
 
-    const meta = { name: nickname };
-    if (avatar) meta.picture = avatar;
-
-    const event = await NostrCrypto.signEvent({
-      kind: 0,
-      content: JSON.stringify(meta),
-      tags: [],
-      created_at: Math.floor(Date.now() / 1000)
-    }, keyPair.privateKey);
-
-    NostrRelay.publish(event);
+    // Broadcast metadata to all P2P peers
+    P2P.broadcastMeta();
   }
 
   function switchChannel(channel) {
-    // Unsubscribe from old channel
-    if (currentSubId) {
-      NostrRelay.unsubscribe(currentSubId);
+    // Remove old Yjs observer
+    if (observer) {
+      const oldMessages = P2P.getMessages(currentChannel);
+      if (oldMessages) {
+        oldMessages.unobserve(observer);
+      }
     }
 
     currentChannel = channel;
-    messageSet.clear();
+    renderedMessages.clear();
 
     // Clear chat
     const messagesEl = document.getElementById('messages');
@@ -146,75 +154,92 @@ const NostrChat = (() => {
     const channelNameEl = document.getElementById('current-channel-name');
     if (channelNameEl) channelNameEl.textContent = '# ' + channel;
 
-    // Subscribe to channel messages
-    currentSubId = NostrRelay.subscribe(
-      { kinds: [1], '#channel': [channel] },
-      (event) => {
-        if (!messageSet.has(event.id)) {
-          messageSet.add(event.id);
-          renderMessage(event);
-        }
-      },
-      (subId) => {
-        // EOSE - scroll to bottom
-        const messagesEl = document.getElementById('messages');
-        if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+    // Get Yjs array for this channel
+    const yMessages = P2P.getMessages(channel);
+    if (!yMessages) return;
+
+    // Render existing messages from Yjs
+    const existing = yMessages.toArray();
+    for (const msg of existing) {
+      if (!renderedMessages.has(msg.id)) {
+        renderedMessages.add(msg.id);
+        renderMessage(msg);
       }
-    );
+    }
+
+    // Scroll to bottom after initial render
+    if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+
+    // Observe new messages
+    observer = (event) => {
+      event.changes.added.forEach(item => {
+        item.content.getContent().forEach(msg => {
+          if (msg && msg.id && !renderedMessages.has(msg.id)) {
+            renderedMessages.add(msg.id);
+            renderMessage(msg);
+          }
+        });
+      });
+    };
+    yMessages.observe(observer);
   }
 
-  async function sendMessage(text) {
+  function sendMessage(text) {
     if (!text.trim()) return;
 
-    const event = await NostrCrypto.signEvent({
-      kind: 1,
+    const msg = {
+      id: keyPair.publicKey.slice(0, 8) + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+      pubkey: keyPair.publicKey,
       content: text.trim(),
-      tags: [['channel', currentChannel]],
+      channel: currentChannel,
       created_at: Math.floor(Date.now() / 1000)
-    }, keyPair.privateKey);
+    };
 
-    NostrRelay.publish(event);
+    // Push to Yjs array - automatically synced to all peers
+    const yMessages = P2P.getMessages(currentChannel);
+    if (yMessages) {
+      yMessages.push([msg]);
+    }
   }
 
-  function renderMessage(event) {
+  function renderMessage(msg) {
     const messagesEl = document.getElementById('messages');
     if (!messagesEl) return;
 
-    const isOwn = event.pubkey === keyPair.publicKey;
-    const time = new Date(event.created_at * 1000);
+    const isOwn = msg.pubkey === keyPair.publicKey;
+    const time = new Date(msg.created_at * 1000);
     const timeStr = time.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
     const dateStr = time.toLocaleDateString('de-DE');
-    const displayName = getDisplayName(event.pubkey);
+    const displayName = getDisplayName(msg.pubkey);
 
-    const avatarUrl = avatarCache[event.pubkey];
+    const avatarUrl = avatarCache[msg.pubkey];
     const avatarContent = avatarUrl
       ? `<img class="avatar-img" src="${avatarUrl}">`
       : displayName.charAt(0).toUpperCase();
 
     const msgEl = document.createElement('div');
     msgEl.className = 'message' + (isOwn ? ' own' : '');
-    msgEl.dataset.eventId = event.id;
-    msgEl.dataset.pubkey = event.pubkey;
+    msgEl.dataset.msgId = msg.id;
+    msgEl.dataset.pubkey = msg.pubkey;
     msgEl.innerHTML = `
       <div class="message-avatar">${avatarContent}</div>
       <div class="message-body">
         <div class="message-header">
-          <span class="msg-author" data-pubkey="${event.pubkey}">${escapeHtml(displayName)}</span>
+          <span class="msg-author" data-pubkey="${msg.pubkey}">${escapeHtml(displayName)}</span>
           <span class="msg-time" title="${dateStr}">${timeStr}</span>
         </div>
-        <div class="message-content">${formatContent(event.content)}</div>
+        <div class="message-content">${formatContent(msg.content)}</div>
       </div>
     `;
 
-    // Set timestamp BEFORE insertion so it's available for future comparisons
-    msgEl.dataset.createdAt = String(event.created_at);
+    msgEl.dataset.createdAt = String(msg.created_at);
 
     // Insert in chronological order
     const existingMessages = messagesEl.querySelectorAll('.message');
     let inserted = false;
     for (const existing of existingMessages) {
       const existingTime = parseInt(existing.dataset.createdAt || '0', 10);
-      if (event.created_at < existingTime) {
+      if (msg.created_at < existingTime) {
         messagesEl.insertBefore(msgEl, existing);
         inserted = true;
         break;
@@ -232,15 +257,11 @@ const NostrChat = (() => {
   }
 
   function formatContent(text) {
-    // Escape HTML first
     let formatted = escapeHtml(text);
-    // Simple markdown-like formatting
     formatted = formatted.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
     formatted = formatted.replace(/\*(.*?)\*/g, '<em>$1</em>');
     formatted = formatted.replace(/`(.*?)`/g, '<code>$1</code>');
-    // URLs
     formatted = formatted.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
-    // Newlines
     formatted = formatted.replace(/\n/g, '<br>');
     return formatted;
   }

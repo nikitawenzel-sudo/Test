@@ -1,10 +1,10 @@
-// app.js - Main Application Logic
+// app.js - Main Application Logic (P2P Version)
 
 const App = (() => {
   let keyPair = null;
-  let relayUrl = 'ws://localhost:8080';
+  let roomId = 'nostr-discord-default';
 
-  // Resize avatar image to 96x96 JPEG
+  // Resize avatar/icon image to 96x96 JPEG
   function resizeAvatar(file) {
     return new Promise((resolve) => {
       const reader = new FileReader();
@@ -16,7 +16,6 @@ const App = (() => {
           canvas.width = size;
           canvas.height = size;
           const ctx = canvas.getContext('2d');
-          // Crop to square from center
           const minDim = Math.min(img.width, img.height);
           const sx = (img.width - minDim) / 2;
           const sy = (img.height - minDim) / 2;
@@ -55,7 +54,6 @@ const App = (() => {
         : '🌐';
     }
 
-    // Update page title too
     document.title = serverName;
   }
 
@@ -73,12 +71,11 @@ const App = (() => {
   }
 
   async function init() {
-    // Show setup modal if first time
     const hasKey = localStorage.getItem('nostr_privkey');
     const hasNick = localStorage.getItem('nostr_nickname');
-    const savedRelay = localStorage.getItem('nostr_relay');
+    const savedRoom = localStorage.getItem('nostr_room');
 
-    if (savedRelay) relayUrl = savedRelay;
+    if (savedRoom) roomId = savedRoom;
 
     if (!hasKey || !hasNick) {
       showSetupModal();
@@ -91,7 +88,7 @@ const App = (() => {
     const modal = document.getElementById('setup-modal');
     modal.style.display = 'flex';
 
-    const relayInput = document.getElementById('setup-relay');
+    const roomInput = document.getElementById('setup-room');
     const nickInput = document.getElementById('setup-nickname');
     const startBtn = document.getElementById('setup-start');
     const importKeyInput = document.getElementById('setup-import-key');
@@ -99,9 +96,8 @@ const App = (() => {
     const avatarInput = document.getElementById('setup-avatar-input');
     const avatarPreview = document.getElementById('setup-avatar-preview');
 
-    relayInput.value = relayUrl;
+    roomInput.value = roomId;
 
-    // Setup avatar upload
     setupAvatarUpload(avatarUpload, avatarInput, avatarPreview);
 
     startBtn.addEventListener('click', async () => {
@@ -111,16 +107,14 @@ const App = (() => {
         return;
       }
 
-      relayUrl = relayInput.value.trim() || relayUrl;
-      localStorage.setItem('nostr_relay', relayUrl);
+      roomId = roomInput.value.trim() || roomId;
+      localStorage.setItem('nostr_room', roomId);
 
-      // Import or generate key
       const importKey = importKeyInput.value.trim();
       if (importKey && importKey.length === 64) {
         localStorage.setItem('nostr_privkey', importKey);
       }
 
-      // Save avatar if uploaded
       const avatarData = avatarPreview.dataset.avatar;
       if (avatarData) {
         NostrCrypto.setAvatar(avatarData);
@@ -131,7 +125,6 @@ const App = (() => {
       await startApp();
     });
 
-    // Enter key support
     nickInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') startBtn.click();
     });
@@ -149,61 +142,57 @@ const App = (() => {
     const nicknameEl = document.getElementById('my-nickname');
     if (nicknameEl) nicknameEl.textContent = NostrCrypto.getNickname();
 
-    // Show avatar in user panel
     updateMyAvatar();
-
-    // Show server name and icon
     updateServerHeader();
 
-    // Initialize modules
+    // Initialize P2P layer
+    P2P.init(keyPair);
+
+    // Initialize modules (they register P2P callbacks)
     NostrChat.init(keyPair);
     NostrVoice.init(keyPair);
     NostrScreenShare.init(keyPair);
 
-    // Set local avatar in cache so it's available for rendering
+    // Set local avatar in cache
     const myAvatar = NostrCrypto.getAvatar();
     if (myAvatar) {
       NostrChat.setLocalAvatar(keyPair.publicKey, myAvatar);
     }
 
-    // Connect to relay
+    // Connect to P2P room
     updateConnectionStatus('connecting');
     try {
-      await NostrRelay.connect(relayUrl);
+      await P2P.connect(roomId);
       updateConnectionStatus('connected');
 
-      // Publish nickname
-      await NostrChat.publishNickname(NostrCrypto.getNickname());
+      // Broadcast our nickname/avatar to peers
+      NostrChat.publishNickname(NostrCrypto.getNickname());
+
+      // Add ourselves to online list
+      NostrChat.setLocalAvatar(keyPair.publicKey, myAvatar);
     } catch (e) {
-      console.error('Connection failed:', e);
+      console.error('P2P connection failed:', e);
       updateConnectionStatus('disconnected');
     }
 
-    NostrRelay.onConnect(async () => {
+    // Update status on peer changes
+    P2P.onPeerJoin(() => {
       updateConnectionStatus('connected');
-      // Re-publish nickname on reconnect so other users see us
-      try {
-        const nick = NostrCrypto.getNickname();
-        if (nick) await NostrChat.publishNickname(nick);
-      } catch (e) {
-        console.error('Failed to republish nickname:', e);
+      // Re-broadcast meta when new peer joins
+      NostrChat.publishNickname(NostrCrypto.getNickname());
+    });
+
+    P2P.onPeerLeave(() => {
+      if (P2P.getPeerCount() === 0) {
+        updateConnectionStatus('waiting');
       }
     });
-    NostrRelay.onDisconnect(() => updateConnectionStatus('disconnected'));
 
-    // Setup channels
+    // Setup UI
     setupChannels();
-
-    // Setup chat input
     setupChatInput();
-
-    // Setup voice controls
     setupVoiceControls();
-
-    // Setup settings
     setupSettings();
-
-    // Setup server settings
     setupServerSettings();
 
     // Switch to default channel
@@ -214,11 +203,14 @@ const App = (() => {
     const statusEl = document.getElementById('connection-status');
     if (!statusEl) return;
 
+    const peerCount = P2P.getPeerCount();
+
     statusEl.className = 'status-indicator ' + status;
     const labels = {
-      connected: '🟢 Verbunden',
+      connected: `🟢 P2P (${peerCount} Peer${peerCount !== 1 ? 's' : ''})`,
       connecting: '🟡 Verbinde...',
-      disconnected: '🔴 Getrennt'
+      disconnected: '🔴 Getrennt',
+      waiting: '🟡 Warte auf Peers...'
     };
     statusEl.textContent = labels[status] || status;
   }
@@ -230,7 +222,6 @@ const App = (() => {
     const channels = NostrChat.getDefaultChannels();
     channelList.innerHTML = '';
 
-    // Text channels section
     const textHeader = document.createElement('div');
     textHeader.className = 'channel-section-header';
     textHeader.textContent = 'TEXT CHANNELS';
@@ -245,7 +236,6 @@ const App = (() => {
       channelList.appendChild(item);
     });
 
-    // Voice channel section
     const voiceHeader = document.createElement('div');
     voiceHeader.className = 'channel-section-header';
     voiceHeader.textContent = 'VOICE CHANNELS';
@@ -264,13 +254,11 @@ const App = (() => {
     });
     channelList.appendChild(voiceItem);
 
-    // Voice users container
     const voiceUsers = document.createElement('div');
     voiceUsers.id = 'voice-users';
     voiceUsers.className = 'voice-users-list';
     channelList.appendChild(voiceUsers);
 
-    // New channel input
     const newChannelDiv = document.createElement('div');
     newChannelDiv.className = 'new-channel';
     newChannelDiv.innerHTML = `
@@ -282,15 +270,12 @@ const App = (() => {
       if (e.key === 'Enter') {
         const name = e.target.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
         if (name) {
-          // Add new channel to list
           const item = document.createElement('div');
           item.className = 'channel-item';
           item.dataset.channel = name;
           item.innerHTML = `<span class="channel-hash">#</span> ${name}`;
           item.addEventListener('click', () => NostrChat.switchChannel(name));
-          // Insert before voice header
           channelList.insertBefore(item, voiceHeader);
-
           NostrChat.switchChannel(name);
           e.target.value = '';
         }
@@ -366,16 +351,14 @@ const App = (() => {
       const settingsAvatarInput = document.getElementById('settings-avatar-input');
       const settingsAvatarPreview = document.getElementById('settings-avatar-preview');
 
-      // Setup avatar upload for settings
       setupAvatarUpload(settingsAvatarUpload, settingsAvatarInput, settingsAvatarPreview);
 
       settingsBtn.addEventListener('click', () => {
         document.getElementById('settings-nickname').value = NostrCrypto.getNickname() || '';
-        document.getElementById('settings-relay').value = localStorage.getItem('nostr_relay') || relayUrl;
+        document.getElementById('settings-room').value = localStorage.getItem('nostr_room') || roomId;
         document.getElementById('settings-pubkey').textContent = keyPair.publicKey;
         document.getElementById('settings-privkey').textContent = '••••••••••••••••';
 
-        // Show current avatar in settings
         const currentAvatar = NostrCrypto.getAvatar();
         if (currentAvatar) {
           settingsAvatarPreview.innerHTML = `<img src="${currentAvatar}">`;
@@ -397,9 +380,8 @@ const App = (() => {
 
       document.getElementById('settings-save')?.addEventListener('click', async () => {
         const newNick = document.getElementById('settings-nickname').value.trim();
-        const newRelay = document.getElementById('settings-relay').value.trim();
+        const newRoom = document.getElementById('settings-room').value.trim();
 
-        // Save avatar if changed
         const newAvatar = settingsAvatarPreview.dataset.avatar;
         if (newAvatar && newAvatar !== NostrCrypto.getAvatar()) {
           NostrCrypto.setAvatar(newAvatar);
@@ -407,15 +389,14 @@ const App = (() => {
           updateMyAvatar();
         }
 
-        // Publish nickname (will include avatar)
         if (newNick) {
-          await NostrChat.publishNickname(newNick);
+          NostrChat.publishNickname(newNick);
           document.getElementById('my-nickname').textContent = newNick;
         }
 
-        if (newRelay && newRelay !== relayUrl) {
-          localStorage.setItem('nostr_relay', newRelay);
-          alert('Relay geaendert. Bitte Seite neu laden.');
+        if (newRoom && newRoom !== roomId) {
+          localStorage.setItem('nostr_room', newRoom);
+          alert('Room-ID geaendert. Bitte Seite neu laden.');
         }
 
         settingsModal.style.display = 'none';
@@ -435,7 +416,6 @@ const App = (() => {
       });
     }
 
-    // Close modals on backdrop click
     document.querySelectorAll('.modal').forEach(modal => {
       modal.addEventListener('click', (e) => {
         if (e.target === modal) modal.style.display = 'none';
@@ -453,10 +433,8 @@ const App = (() => {
     const serverIconPreview = document.getElementById('server-icon-preview');
     const serverNameInput = document.getElementById('server-name-input');
 
-    // Setup icon upload (reuse existing avatar upload helper)
     setupAvatarUpload(serverIconUpload, serverIconInput, serverIconPreview);
 
-    // Click header to open server settings
     sidebarHeader.addEventListener('click', () => {
       const currentName = localStorage.getItem('server_name') || 'NOSTR Discord';
       const currentIcon = localStorage.getItem('server_icon');

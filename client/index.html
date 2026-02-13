@@ -11,7 +11,7 @@
   <div id="setup-modal" class="modal" style="display: none;">
     <div class="modal-content setup-modal-content">
       <h1>🌐 NOSTR Discord</h1>
-      <p class="subtitle">Dezentraler Chat • Voice • Screen Share</p>
+      <p class="subtitle">Dezentraler P2P Chat • Voice • Screen Share</p>
 
       <div class="form-group">
         <label>Profilbild (optional)</label>
@@ -28,8 +28,9 @@
       </div>
 
       <div class="form-group">
-        <label for="setup-relay">Relay Server</label>
-        <input type="text" id="setup-relay" placeholder="ws://localhost:8080">
+        <label for="setup-room">Room-ID (gleiche ID = gleicher Raum)</label>
+        <input type="text" id="setup-room" placeholder="nostr-discord-default">
+        <small>Alle mit der gleichen Room-ID sind im selben Chat</small>
       </div>
 
       <div class="form-group">
@@ -62,8 +63,8 @@
       </div>
 
       <div class="form-group">
-        <label for="settings-relay">Relay Server</label>
-        <input type="text" id="settings-relay">
+        <label for="settings-room">Room-ID</label>
+        <input type="text" id="settings-room">
       </div>
 
       <div class="form-group">
@@ -159,7 +160,7 @@
       <div id="messages" class="messages-container">
         <div class="welcome-message">
           <h2>Willkommen bei #allgemein! 👋</h2>
-          <p>Dies ist der Anfang des Channels.</p>
+          <p>Dies ist der Anfang des Channels. Komplett P2P - kein Server noetig!</p>
         </div>
       </div>
 
@@ -178,7 +179,7 @@
       </div>
     </main>
 
-    <!-- Right Sidebar: Online Users (optional, simplified) -->
+    <!-- Right Sidebar: Online Users -->
     <aside class="sidebar-right">
       <h3>Online</h3>
       <div id="online-users" class="online-users-list">
@@ -187,13 +188,48 @@
     </aside>
   </div>
 
-  <!-- Scripts -->
-  <script src="js/noble-loader.js"></script>
-  <script src="js/crypto.js"></script>
-  <script src="js/relay.js"></script>
-  <script src="js/chat.js"></script>
-  <script src="js/voice.js"></script>
-  <script src="js/screenshare.js"></script>
-  <script src="js/app.js"></script>
+  <!-- P2P CDN Dependencies: Load as ES modules, then set globals -->
+  <script type="module">
+    // Import Trystero (NOSTR strategy for peer discovery)
+    import { joinRoom } from 'https://esm.sh/trystero/nostr';
+    window.trysteroJoinRoom = joinRoom;
+
+    // Import Yjs (CRDT for conflict-free data sync)
+    import * as Y from 'https://esm.sh/yjs';
+    window.Yjs = Y;
+
+    // Import y-indexeddb (local persistence)
+    import { IndexeddbPersistence } from 'https://esm.sh/y-indexeddb';
+    window.YIndexeddb = { IndexeddbPersistence };
+
+    // Once CDN libs are loaded, load app scripts in sequence
+    async function loadScript(src) {
+      return new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = reject;
+        document.body.appendChild(script);
+      });
+    }
+
+    try {
+      await loadScript('js/noble-loader.js');
+      await loadScript('js/crypto.js');
+      await loadScript('js/p2p.js');
+      await loadScript('js/chat.js');
+      await loadScript('js/voice.js');
+      await loadScript('js/screenshare.js');
+      await loadScript('js/app.js');
+      console.log('All P2P modules loaded successfully');
+    } catch (e) {
+      console.error('Failed to load modules:', e);
+      document.body.innerHTML = '<div style="color:white;padding:40px;text-align:center;">' +
+        '<h2>Fehler beim Laden</h2>' +
+        '<p>CDN-Bibliotheken konnten nicht geladen werden. Bitte Internetverbindung pruefen.</p>' +
+        '<p style="color:#888;font-size:12px;">' + e.message + '</p>' +
+        '</div>';
+    }
+  </script>
 </body>
 </html>

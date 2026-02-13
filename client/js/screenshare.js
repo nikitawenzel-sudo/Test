@@ -1,66 +1,39 @@
-// screenshare.js - WebRTC Screen Sharing
+// screenshare.js - Screen Sharing (P2P via Trystero)
 
 const NostrScreenShare = (() => {
   let screenStream = null;
-  let screenPeers = new Map(); // pubkey -> RTCPeerConnection (separate connections for screen)
   let keyPair = null;
   let isSharing = false;
   let currentSharerPubkey = null;
 
-  const ICE_SERVERS = [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    {
-      urls: 'turn:a.relay.metered.ca:80',
-      username: 'e8dd65b92f73a3e0bfa4d522',
-      credential: '5VoqBuvMSgKN0BIU'
-    },
-    {
-      urls: 'turn:a.relay.metered.ca:80?transport=tcp',
-      username: 'e8dd65b92f73a3e0bfa4d522',
-      credential: '5VoqBuvMSgKN0BIU'
-    },
-    {
-      urls: 'turn:a.relay.metered.ca:443',
-      username: 'e8dd65b92f73a3e0bfa4d522',
-      credential: '5VoqBuvMSgKN0BIU'
-    },
-    {
-      urls: 'turns:a.relay.metered.ca:443',
-      username: 'e8dd65b92f73a3e0bfa4d522',
-      credential: '5VoqBuvMSgKN0BIU'
-    }
-  ];
-
   function init(keys) {
     keyPair = keys;
 
-    // Listen for screen share signaling
-    NostrRelay.subscribe(
-      { kinds: [25000], '#p': [keyPair.publicKey] },
-      handleScreenSignaling
-    );
+    // Handle incoming screen streams from peers
+    P2P.onScreenStream((stream, peerId) => {
+      const pubkey = P2P.getPubkeyForPeer(peerId);
+      if (pubkey) {
+        showScreenView(stream, pubkey);
+      }
+    });
 
-    // Listen for screen share announcements
-    NostrRelay.subscribe(
-      { kinds: [25000], '#screen-share-start': ['true'] },
-      (event) => {
-        if (event.pubkey === keyPair.publicKey) return;
-        currentSharerPubkey = event.pubkey;
+    // Handle peer leaving - remove screen share
+    P2P.onPeerLeave((peerId, peerInfo) => {
+      if (peerInfo && peerInfo.pubkey === currentSharerPubkey) {
+        currentSharerPubkey = null;
+        removeScreenView();
         updateScreenUI();
       }
-    );
+    });
 
-    NostrRelay.subscribe(
-      { kinds: [25000], '#screen-share-stop': ['true'] },
-      (event) => {
-        if (event.pubkey === currentSharerPubkey) {
-          currentSharerPubkey = null;
-          removeScreenView();
-          updateScreenUI();
-        }
+    P2P.onStreamRemoved(peerId => {
+      const pubkey = P2P.getPubkeyForPeer(peerId);
+      if (pubkey === currentSharerPubkey) {
+        currentSharerPubkey = null;
+        removeScreenView();
+        updateScreenUI();
       }
-    );
+    });
   }
 
   async function startSharing() {
@@ -77,145 +50,14 @@ const NostrScreenShare = (() => {
         stopSharing();
       };
 
-      // Announce screen share
-      const event = await NostrCrypto.signEvent({
-        kind: 25000,
-        content: JSON.stringify({ type: 'screen-share-start' }),
-        tags: [['screen-share-start', 'true']],
-        created_at: Math.floor(Date.now() / 1000)
-      }, keyPair.privateKey);
-      NostrRelay.publish(event);
-
-      // Create peer connections for all voice users
-      const voiceUsers = NostrVoice.getVoiceUsers();
-      for (const pubkey of voiceUsers) {
-        if (pubkey === keyPair.publicKey) continue;
-        await createScreenPeer(pubkey);
-      }
+      // Share screen stream with all peers via Trystero
+      P2P.addStream(screenStream, { type: 'screen' });
 
       updateScreenUI();
       return true;
     } catch (e) {
       console.error('Screen share error:', e);
       return false;
-    }
-  }
-
-  async function createScreenPeer(remotePubkey) {
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-    screenPeers.set(remotePubkey, pc);
-
-    if (screenStream) {
-      screenStream.getTracks().forEach(track => {
-        pc.addTrack(track, screenStream);
-      });
-    }
-
-    pc.onicecandidate = async (event) => {
-      if (event.candidate) {
-        const sigEvent = await NostrCrypto.signEvent({
-          kind: 25000,
-          content: JSON.stringify({
-            type: 'screen-ice-candidate',
-            candidate: event.candidate
-          }),
-          tags: [['p', remotePubkey]],
-          created_at: Math.floor(Date.now() / 1000)
-        }, keyPair.privateKey);
-        NostrRelay.publish(sigEvent);
-      }
-    };
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-
-    const sigEvent = await NostrCrypto.signEvent({
-      kind: 25000,
-      content: JSON.stringify({
-        type: 'screen-offer',
-        sdp: pc.localDescription
-      }),
-      tags: [['p', remotePubkey]],
-      created_at: Math.floor(Date.now() / 1000)
-    }, keyPair.privateKey);
-    NostrRelay.publish(sigEvent);
-  }
-
-  async function handleScreenSignaling(event) {
-    if (event.pubkey === keyPair.publicKey) return;
-
-    let data;
-    try {
-      data = JSON.parse(event.content);
-    } catch (e) {
-      return;
-    }
-
-    // Only handle screen-* events here
-    if (!data.type || !data.type.startsWith('screen-')) return;
-
-    const remotePubkey = event.pubkey;
-
-    switch (data.type) {
-      case 'screen-offer': {
-        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-        screenPeers.set(remotePubkey, pc);
-
-        pc.ontrack = (trackEvent) => {
-          showScreenView(trackEvent.streams[0], remotePubkey);
-        };
-
-        pc.onicecandidate = async (iceEvent) => {
-          if (iceEvent.candidate) {
-            const sigEvent = await NostrCrypto.signEvent({
-              kind: 25000,
-              content: JSON.stringify({
-                type: 'screen-ice-candidate',
-                candidate: iceEvent.candidate
-              }),
-              tags: [['p', remotePubkey]],
-              created_at: Math.floor(Date.now() / 1000)
-            }, keyPair.privateKey);
-            NostrRelay.publish(sigEvent);
-          }
-        };
-
-        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-
-        const sigEvent = await NostrCrypto.signEvent({
-          kind: 25000,
-          content: JSON.stringify({
-            type: 'screen-answer',
-            sdp: pc.localDescription
-          }),
-          tags: [['p', remotePubkey]],
-          created_at: Math.floor(Date.now() / 1000)
-        }, keyPair.privateKey);
-        NostrRelay.publish(sigEvent);
-        break;
-      }
-
-      case 'screen-answer': {
-        const pc = screenPeers.get(remotePubkey);
-        if (pc) {
-          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-        }
-        break;
-      }
-
-      case 'screen-ice-candidate': {
-        const pc = screenPeers.get(remotePubkey);
-        if (pc && data.candidate) {
-          try {
-            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-          } catch (e) {
-            console.error('Screen ICE error:', e);
-          }
-        }
-        break;
-      }
     }
   }
 
@@ -252,27 +94,14 @@ const NostrScreenShare = (() => {
   }
 
   async function stopSharing() {
+    // Remove stream from Trystero
     if (screenStream) {
+      P2P.removeStream(screenStream, { type: 'screen' });
       screenStream.getTracks().forEach(track => track.stop());
       screenStream = null;
     }
 
-    // Close all screen peer connections
-    for (const [pubkey, pc] of screenPeers.entries()) {
-      pc.close();
-    }
-    screenPeers.clear();
-
     isSharing = false;
-
-    // Announce stop
-    const event = await NostrCrypto.signEvent({
-      kind: 25000,
-      content: JSON.stringify({ type: 'screen-share-stop' }),
-      tags: [['screen-share-stop', 'true']],
-      created_at: Math.floor(Date.now() / 1000)
-    }, keyPair.privateKey);
-    NostrRelay.publish(event);
 
     if (currentSharerPubkey === keyPair.publicKey) {
       currentSharerPubkey = null;

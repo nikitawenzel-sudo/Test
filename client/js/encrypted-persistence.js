@@ -22,12 +22,23 @@ const EncryptedPersistence = (() => {
 
   // ====== MASTER KEY DERIVATION (HKDF) ======
 
-  // Derive master key from private key using HKDF
-  // privateKey → HKDF(SHA-256, salt='campfire-v1', info='indexeddb-encryption') → AES-256-GCM
-  async function deriveMasterKey(privateKeyHex) {
+  // Derive master key from private key + passwordHash using HKDF
+  // HKDF(SHA-256, ikm: privateKey + passwordHash, salt='campfire-v1', info='indexeddb-encryption')
+  async function deriveMasterKey(privateKeyHex, passwordHashHex) {
+    const privBytes = hexToBytes(privateKeyHex);
+    let ikm;
+    if (passwordHashHex) {
+      const pwHashBytes = hexToBytes(passwordHashHex);
+      ikm = new Uint8Array(privBytes.length + pwHashBytes.length);
+      ikm.set(privBytes);
+      ikm.set(pwHashBytes, privBytes.length);
+    } else {
+      ikm = privBytes;
+    }
+
     const keyMaterial = await crypto.subtle.importKey(
       'raw',
-      hexToBytes(privateKeyHex),
+      ikm,
       'HKDF',
       false,
       ['deriveKey']
@@ -239,9 +250,60 @@ const EncryptedPersistence = (() => {
   // ====== MAIN BIND FUNCTION ======
 
   // Bind to a Yjs document: load encrypted state, listen for updates
-  async function bind(ydoc, roomId, privateKeyHex) {
-    await deriveMasterKey(privateKeyHex);
+  // passwordHashHex: optional SHA-256(identity password) to strengthen master key
+  async function bind(ydoc, roomId, privateKeyHex, passwordHashHex) {
+    const migrationFlag = 'campfire-mk-v2-' + roomId;
+    const needsMigration = passwordHashHex && !localStorage.getItem(migrationFlag);
+
     await openDB(roomId);
+
+    if (needsMigration) {
+      // MIGRATION: Re-encrypt existing data from old key (privKey only) to new key (privKey + pwHash)
+      let oldFullState = null;
+      let oldUpdates = [];
+      let oldRatchetState = null;
+
+      try {
+        // Derive old master key (private key only, no password)
+        await deriveMasterKey(privateKeyHex, null);
+        oldFullState = await loadFullState();
+        oldUpdates = await loadUpdates();
+        oldRatchetState = await loadRatchetState();
+      } catch (e) {
+        // Expected for fresh setups where no data exists yet
+      }
+
+      // Derive new master key (with password hash)
+      await deriveMasterKey(privateKeyHex, passwordHashHex);
+
+      // Re-encrypt data if any existed
+      if (oldFullState || oldUpdates.length > 0 || oldRatchetState) {
+        console.log('Migrating encrypted persistence to v2 (with password)...');
+        if (oldFullState) {
+          await storeFullState(oldFullState);
+        }
+        if (oldUpdates.length > 0) {
+          await clearUpdates();
+          for (const update of oldUpdates) {
+            await storeUpdate(update);
+          }
+        }
+        if (oldRatchetState) {
+          await storeRatchetState(oldRatchetState);
+        }
+        console.log('Migration complete');
+      }
+
+      localStorage.setItem(migrationFlag, '1');
+    } else {
+      // Normal: derive key (with or without password)
+      await deriveMasterKey(privateKeyHex, passwordHashHex || null);
+
+      // Mark as v2 if using password (fresh setup with password)
+      if (passwordHashHex) {
+        localStorage.setItem(migrationFlag, '1');
+      }
+    }
 
     // Load existing encrypted state
     const fullState = await loadFullState();

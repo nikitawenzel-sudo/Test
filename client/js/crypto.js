@@ -371,6 +371,13 @@ const NostrCrypto = (() => {
     return { privateKey: privateKeyHex, publicKey };
   }
 
+  // Hash identity password for master key derivation (SHA-256 → hex)
+  async function hashPasswordForMasterKey(password) {
+    const encoder = new TextEncoder();
+    const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(password));
+    return bytesToHex(new Uint8Array(hashBuffer));
+  }
+
   // ====== RECOVERY CODE (Base32 with checksum) ======
 
   const RECOVERY_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
@@ -472,6 +479,7 @@ const NostrCrypto = (() => {
     hasPlaintextKey,
     getStoredPubkey,
     getPasswordStrength,
+    hashPasswordForMasterKey,
     // Recovery Code
     generateRecoveryCode,
     recoverFromCode,

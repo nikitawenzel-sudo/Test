@@ -4,6 +4,7 @@
 
 const App = (() => {
   let keyPair = null;
+  let passwordHash = null; // SHA-256(identity password) hex, for master key derivation
   let roomId = 'nostr-discord-default';
 
   // Resize avatar/icon image to 96x96 JPEG
@@ -151,6 +152,7 @@ const App = (() => {
       }
 
       keyPair = NostrCrypto.createKeyPair(privateKey);
+      passwordHash = await NostrCrypto.hashPasswordForMasterKey(password);
       modal.style.display = 'none';
       checkRoomPassword();
     };
@@ -205,6 +207,7 @@ const App = (() => {
       await NostrCrypto.encryptPrivateKey(existingKey, password);
 
       keyPair = NostrCrypto.createKeyPair(existingKey);
+      passwordHash = await NostrCrypto.hashPasswordForMasterKey(password);
       modal.style.display = 'none';
 
       // Show recovery code after migration
@@ -334,6 +337,7 @@ const App = (() => {
       await NostrCrypto.encryptPrivateKey(privateKey, identityPassword);
 
       keyPair = NostrCrypto.createKeyPair(privateKey);
+      passwordHash = await NostrCrypto.hashPasswordForMasterKey(identityPassword);
       modal.style.display = 'none';
 
       // Show recovery code before starting app
@@ -448,6 +452,7 @@ const App = (() => {
       await NostrCrypto.encryptPrivateKey(privateKey, password);
 
       keyPair = NostrCrypto.createKeyPair(privateKey);
+      passwordHash = await NostrCrypto.hashPasswordForMasterKey(password);
       modal.style.display = 'none';
       checkRoomPassword();
     };
@@ -574,10 +579,10 @@ const App = (() => {
       NostrChat.setLocalAvatar(keyPair.publicKey, myAvatar);
     }
 
-    // Connect to P2P room
+    // Connect to P2P room (passwordHash strengthens IndexedDB master key)
     updateConnectionStatus('connecting');
     try {
-      await P2P.connect(roomId);
+      await P2P.connect(roomId, passwordHash);
       updateConnectionStatus('connected');
 
       // Broadcast our nickname/avatar to peers

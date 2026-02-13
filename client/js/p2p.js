@@ -46,14 +46,15 @@ const P2P = (() => {
     keyPair = keys;
   }
 
-  async function connect(id) {
+  async function connect(id, passwordHashHex) {
     roomId = id;
 
     // Initialize Yjs document
     ydoc = new window.Yjs.Doc();
 
     // Encrypted IndexedDB persistence (replaces y-indexeddb)
-    provider = await EncryptedPersistence.bind(ydoc, roomId, keyPair.privateKey);
+    // passwordHashHex strengthens the master key derivation (Task 1.5)
+    provider = await EncryptedPersistence.bind(ydoc, roomId, keyPair.privateKey, passwordHashHex);
     console.log('Encrypted persistence bound');
 
     // Initialize Ratchet for forward secrecy

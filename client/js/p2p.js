@@ -158,6 +158,7 @@ const P2P = (() => {
             peerInfo.pubkey = resp.pubkey;
             peerInfo.verified = true;
           }
+          PeerManager.updatePeer(peerId, { pubkey: resp.pubkey, verified: true });
           console.log('Peer VERIFIED:', peerId, resp.pubkey.slice(0, 8) + '...');
           metaUpdateCallbacks.forEach(cb => cb(resp.pubkey, {
             pubkey: resp.pubkey,
@@ -252,9 +253,19 @@ const P2P = (() => {
 
     // ====== PEER MANAGEMENT ======
 
+    // Start PeerManager
+    PeerManager.start();
+
     // Handle peer join
     room.onPeerJoin(peerId => {
+      // Check with PeerManager if we should accept
+      if (!PeerManager.shouldAcceptPeer(peerId)) {
+        console.log('PeerManager rejected peer:', peerId, '(at capacity)');
+        return;
+      }
+
       peerCount++;
+      PeerManager.addPeer(peerId, {});
       console.log('Peer joined:', peerId, '(total:', peerCount, ')');
 
       if (!isConnected) {
@@ -292,6 +303,7 @@ const P2P = (() => {
       const leavingPubkey = peerInfo?.pubkey;
 
       peerCount = Math.max(0, peerCount - 1);
+      PeerManager.removePeer(peerId);
       console.log('Peer left:', peerId, '(total:', peerCount, ')');
 
       if (peerInfo) {
@@ -459,6 +471,7 @@ const P2P = (() => {
   }
 
   function disconnect() {
+    PeerManager.stop();
     if (room) {
       room.leave();
       room = null;

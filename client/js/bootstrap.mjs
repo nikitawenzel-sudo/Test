@@ -28,6 +28,7 @@ try {
   await loadScript('js/crypto.js');
   await loadScript('js/encrypted-persistence.js');
   await loadScript('js/ratchet.js');
+  await loadScript('js/peer-mgr.js');
   await loadScript('js/p2p.js');
   await loadScript('js/chat.js');
   await loadScript('js/voice.js');

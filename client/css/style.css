@@ -1057,6 +1057,52 @@ html, body {
   color: var(--header-primary);
 }
 
+/* ====== Share Link ====== */
+
+.share-link-input {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text-link);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--bg-accent);
+  padding: 10px 12px;
+  border-radius: var(--border-radius);
+  width: 100%;
+}
+
+.share-link-input:focus {
+  outline: none;
+  border-color: var(--bg-accent-hover);
+}
+
+.share-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.share-actions .btn-primary,
+.share-actions .btn-secondary {
+  flex: 1;
+}
+
+.share-qr-container {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+  padding: 16px;
+  background: #fff;
+  border-radius: var(--border-radius);
+}
+
+.share-hint {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
 /* ====== Animations ====== */
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(10px); }

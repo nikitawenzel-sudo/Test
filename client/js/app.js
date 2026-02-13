@@ -92,9 +92,429 @@ const App = (() => {
     labelEl.textContent = password ? labels[strength] : '';
   }
 
+  // ====== FRAGMENT URL PARSING ======
+
+  // Parse #room=ROOMID&key=BASE64PASSWORD from URL fragment
+  function parseFragmentParams() {
+    const hash = window.location.hash;
+    if (!hash || hash.length < 2) return null;
+    const params = new URLSearchParams(hash.substring(1));
+    const room = params.get('room');
+    if (!room) return null;
+    const key = params.get('key');
+    return { room, key: key ? atob(key) : null };
+  }
+
+  // Generate share link for current room
+  function generateShareLink() {
+    const base = window.location.origin + window.location.pathname;
+    const roomPassword = NostrCrypto.getRoomPassword();
+    let fragment = '#room=' + encodeURIComponent(roomId);
+    if (roomPassword) {
+      fragment += '&key=' + btoa(roomPassword);
+    }
+    return base + fragment;
+  }
+
+  // ====== MINIMAL QR CODE GENERATOR ======
+
+  // Simple QR Code generator (Mode Byte, Error correction L)
+  // Renders to a canvas element
+  function renderQRCode(canvas, text) {
+    // Use a data URL approach with a simple SVG-based QR rendering
+    // We'll use a compact QR code implementation
+    const modules = generateQRModules(text);
+    if (!modules) return;
+
+    const ctx = canvas.getContext('2d');
+    const size = canvas.width;
+    const moduleCount = modules.length;
+    const cellSize = size / (moduleCount + 8); // 4 cells quiet zone each side
+    const offset = cellSize * 4;
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, size, size);
+
+    ctx.fillStyle = '#000000';
+    for (let row = 0; row < moduleCount; row++) {
+      for (let col = 0; col < moduleCount; col++) {
+        if (modules[row][col]) {
+          ctx.fillRect(
+            offset + col * cellSize,
+            offset + row * cellSize,
+            cellSize + 0.5,
+            cellSize + 0.5
+          );
+        }
+      }
+    }
+  }
+
+  // Minimal QR code matrix generator (version 1-10, error correction L, byte mode)
+  function generateQRModules(text) {
+    // Encode text to byte array
+    const data = new TextEncoder().encode(text);
+    const dataLen = data.length;
+
+    // Find smallest version that fits (EC level L)
+    const capacityL = [0,17,32,53,78,106,134,154,192,230,271,321,367,425,458,520,586,644,718,792,858];
+    let version = 0;
+    for (let v = 1; v <= 20; v++) {
+      if (capacityL[v] >= dataLen) { version = v; break; }
+    }
+    if (!version) return null; // Too long
+
+    const size = version * 4 + 17;
+    // Create module grid (false = white, true = black)
+    const grid = Array.from({ length: size }, () => Array(size).fill(false));
+    const reserved = Array.from({ length: size }, () => Array(size).fill(false));
+
+    // Helper: set module with bounds check
+    function setModule(r, c, val) {
+      if (r >= 0 && r < size && c >= 0 && c < size) {
+        grid[r][c] = val;
+        reserved[r][c] = true;
+      }
+    }
+
+    // Finder patterns (7x7) at three corners
+    function drawFinder(row, col) {
+      for (let r = -1; r <= 7; r++) {
+        for (let c = -1; c <= 7; c++) {
+          const val = (r >= 0 && r <= 6 && c >= 0 && c <= 6) &&
+            (r === 0 || r === 6 || c === 0 || c === 6 ||
+             (r >= 2 && r <= 4 && c >= 2 && c <= 4));
+          setModule(row + r, col + c, !!val);
+        }
+      }
+    }
+
+    drawFinder(0, 0);
+    drawFinder(0, size - 7);
+    drawFinder(size - 7, 0);
+
+    // Timing patterns
+    for (let i = 8; i < size - 8; i++) {
+      setModule(6, i, i % 2 === 0);
+      setModule(i, 6, i % 2 === 0);
+    }
+
+    // Dark module
+    setModule(size - 8, 8, true);
+
+    // Alignment patterns (for version >= 2)
+    if (version >= 2) {
+      const alignPositions = getAlignmentPositions(version);
+      for (const r of alignPositions) {
+        for (const c of alignPositions) {
+          // Skip if overlaps with finder
+          if (reserved[r] && reserved[r][c]) continue;
+          for (let dr = -2; dr <= 2; dr++) {
+            for (let dc = -2; dc <= 2; dc++) {
+              const val = Math.abs(dr) === 2 || Math.abs(dc) === 2 ||
+                         (dr === 0 && dc === 0);
+              setModule(r + dr, c + dc, val);
+            }
+          }
+        }
+      }
+    }
+
+    // Reserve format info areas
+    for (let i = 0; i < 8; i++) {
+      if (!reserved[8]?.[i]) { reserved[8][i] = true; }
+      if (!reserved[i]?.[8]) { reserved[i][8] = true; }
+      if (!reserved[8]?.[size - 1 - i]) { reserved[8][size - 1 - i] = true; }
+      if (!reserved[size - 1 - i]?.[8]) { reserved[size - 1 - i][8] = true; }
+    }
+    if (!reserved[8]?.[8]) reserved[8][8] = true;
+
+    // Reserve version info areas (version >= 7)
+    if (version >= 7) {
+      for (let i = 0; i < 6; i++) {
+        for (let j = 0; j < 3; j++) {
+          reserved[i][size - 11 + j] = true;
+          reserved[size - 11 + j][i] = true;
+        }
+      }
+    }
+
+    // Encode data with error correction
+    const ecBlocks = getECInfo(version);
+    const totalCodewords = ecBlocks.totalCodewords;
+    const ecCodewordsPerBlock = ecBlocks.ecCodewordsPerBlock;
+    const blocks = ecBlocks.blocks;
+
+    // Build data codewords (byte mode)
+    const bitStream = [];
+    function pushBits(val, len) {
+      for (let i = len - 1; i >= 0; i--) {
+        bitStream.push((val >> i) & 1);
+      }
+    }
+
+    // Mode indicator: 0100 (byte)
+    pushBits(4, 4);
+    // Character count (version 1-9: 8 bits, 10+: 16 bits)
+    pushBits(dataLen, version <= 9 ? 8 : 16);
+    // Data
+    for (const b of data) pushBits(b, 8);
+    // Terminator
+    const dataBits = totalCodewords * 8 - ecCodewordsPerBlock * blocks.reduce((s, b) => s + b.count, 0) * 8;
+    const remaining = dataBits - bitStream.length;
+    pushBits(0, Math.min(4, remaining));
+    // Pad to byte boundary
+    while (bitStream.length % 8 !== 0) bitStream.push(0);
+    // Pad codewords
+    const padBytes = [0xEC, 0x11];
+    let padIdx = 0;
+    while (bitStream.length < dataBits) {
+      pushBits(padBytes[padIdx % 2], 8);
+      padIdx++;
+    }
+
+    // Convert bit stream to codewords
+    const dataCodewords = [];
+    for (let i = 0; i < bitStream.length; i += 8) {
+      let byte = 0;
+      for (let j = 0; j < 8; j++) byte = (byte << 1) | (bitStream[i + j] || 0);
+      dataCodewords.push(byte);
+    }
+
+    // Split into blocks and calculate EC
+    const allDataBlocks = [];
+    const allECBlocks = [];
+    let offset2 = 0;
+    for (const blockGroup of blocks) {
+      for (let i = 0; i < blockGroup.count; i++) {
+        const blockData = dataCodewords.slice(offset2, offset2 + blockGroup.dataCodewords);
+        offset2 += blockGroup.dataCodewords;
+        allDataBlocks.push(blockData);
+        allECBlocks.push(reedSolomonEncode(blockData, ecCodewordsPerBlock));
+      }
+    }
+
+    // Interleave data and EC codewords
+    const finalCodewords = [];
+    const maxDataLen = Math.max(...allDataBlocks.map(b => b.length));
+    for (let i = 0; i < maxDataLen; i++) {
+      for (const block of allDataBlocks) {
+        if (i < block.length) finalCodewords.push(block[i]);
+      }
+    }
+    for (let i = 0; i < ecCodewordsPerBlock; i++) {
+      for (const block of allECBlocks) {
+        if (i < block.length) finalCodewords.push(block[i]);
+      }
+    }
+
+    // Place data bits in matrix
+    const allBits = [];
+    for (const cw of finalCodewords) {
+      for (let i = 7; i >= 0; i--) allBits.push((cw >> i) & 1);
+    }
+
+    let bitIndex = 0;
+    let upward = true;
+    for (let col = size - 1; col >= 0; col -= 2) {
+      if (col === 6) col = 5; // Skip timing column
+      const rows = upward ? Array.from({ length: size }, (_, i) => size - 1 - i) :
+                            Array.from({ length: size }, (_, i) => i);
+      for (const row of rows) {
+        for (let c = 0; c < 2; c++) {
+          const actualCol = col - c;
+          if (actualCol < 0) continue;
+          if (reserved[row][actualCol]) continue;
+          if (bitIndex < allBits.length) {
+            grid[row][actualCol] = !!allBits[bitIndex];
+            bitIndex++;
+          }
+        }
+      }
+      upward = !upward;
+    }
+
+    // Apply mask pattern 0 (checkerboard) and format info
+    applyMaskAndFormat(grid, reserved, size);
+
+    return grid;
+  }
+
+  function getAlignmentPositions(version) {
+    if (version === 1) return [];
+    const table = [
+      [], [6,18], [6,22], [6,26], [6,30], [6,34],
+      [6,22,38], [6,24,42], [6,26,46], [6,28,50], [6,30,54],
+      [6,32,58], [6,34,62], [6,26,46,66], [6,26,48,70], [6,26,50,74],
+      [6,30,54,78], [6,30,56,82], [6,30,58,86], [6,34,62,90]
+    ];
+    return table[version - 1] || [];
+  }
+
+  function getECInfo(version) {
+    // EC Level L data: [totalCodewords, ecCodewordsPerBlock, [[count, dataCodewords], ...]]
+    const ecTable = {
+      1:  [26,  7,  [{count:1, dataCodewords:19}]],
+      2:  [44,  10, [{count:1, dataCodewords:34}]],
+      3:  [70,  15, [{count:1, dataCodewords:55}]],
+      4:  [100, 20, [{count:1, dataCodewords:80}]],
+      5:  [134, 26, [{count:1, dataCodewords:108}]],
+      6:  [172, 18, [{count:2, dataCodewords:68}]],
+      7:  [196, 20, [{count:2, dataCodewords:78}]],
+      8:  [242, 24, [{count:2, dataCodewords:97}]],
+      9:  [292, 30, [{count:2, dataCodewords:116}]],
+      10: [346, 18, [{count:2, dataCodewords:68}, {count:2, dataCodewords:69}]],
+      11: [404, 20, [{count:4, dataCodewords:81}]],
+      12: [466, 24, [{count:2, dataCodewords:92}, {count:2, dataCodewords:93}]],
+      13: [532, 26, [{count:4, dataCodewords:107}]],
+      14: [581, 30, [{count:3, dataCodewords:115}, {count:1, dataCodewords:116}]],
+      15: [655, 22, [{count:5, dataCodewords:87}, {count:1, dataCodewords:88}]],
+      16: [733, 24, [{count:5, dataCodewords:98}, {count:1, dataCodewords:99}]],
+      17: [815, 28, [{count:1, dataCodewords:107}, {count:5, dataCodewords:108}]],
+      18: [901, 30, [{count:5, dataCodewords:120}, {count:1, dataCodewords:121}]],
+      19: [991, 28, [{count:3, dataCodewords:113}, {count:4, dataCodewords:114}]],
+      20: [1085,28, [{count:3, dataCodewords:107}, {count:5, dataCodewords:108}]],
+    };
+    const e = ecTable[version];
+    return { totalCodewords: e[0], ecCodewordsPerBlock: e[1], blocks: e[2] };
+  }
+
+  // GF(256) Reed-Solomon with primitive polynomial 0x11d
+  function reedSolomonEncode(data, ecLen) {
+    // Build log/exp tables
+    const gfExp = new Uint8Array(512);
+    const gfLog = new Uint8Array(256);
+    let x = 1;
+    for (let i = 0; i < 255; i++) {
+      gfExp[i] = x;
+      gfLog[x] = i;
+      x = (x << 1) ^ (x >= 128 ? 0x11d : 0);
+    }
+    for (let i = 255; i < 512; i++) gfExp[i] = gfExp[i - 255];
+
+    function gfMul(a, b) {
+      if (a === 0 || b === 0) return 0;
+      return gfExp[gfLog[a] + gfLog[b]];
+    }
+
+    // Generator polynomial
+    let gen = [1];
+    for (let i = 0; i < ecLen; i++) {
+      const newGen = new Array(gen.length + 1).fill(0);
+      for (let j = 0; j < gen.length; j++) {
+        newGen[j] ^= gen[j];
+        newGen[j + 1] ^= gfMul(gen[j], gfExp[i]);
+      }
+      gen = newGen;
+    }
+
+    // Polynomial division
+    const msg = new Uint8Array(data.length + ecLen);
+    msg.set(data);
+    for (let i = 0; i < data.length; i++) {
+      const coef = msg[i];
+      if (coef !== 0) {
+        for (let j = 0; j < gen.length; j++) {
+          msg[i + j] ^= gfMul(gen[j], coef);
+        }
+      }
+    }
+    return Array.from(msg.slice(data.length));
+  }
+
+  function applyMaskAndFormat(grid, reserved, size) {
+    // Apply mask 0: (row + col) % 2 === 0
+    for (let r = 0; r < size; r++) {
+      for (let c = 0; c < size; c++) {
+        if (!reserved[r][c] && (r + c) % 2 === 0) {
+          grid[r][c] = !grid[r][c];
+        }
+      }
+    }
+
+    // Format info for mask 0, EC level L = 0b01_000_000000000 = 0
+    // After BCH encoding: 0x77C4 → bits: 111011111000100
+    const formatBits = 0x77C4;
+    const formatPositions1 = [
+      [0,8],[1,8],[2,8],[3,8],[4,8],[5,8],[7,8],[8,8],
+      [8,7],[8,5],[8,4],[8,3],[8,2],[8,1],[8,0]
+    ];
+    const formatPositions2 = [
+      [8,size-1],[8,size-2],[8,size-3],[8,size-4],[8,size-5],[8,size-6],[8,size-7],[8,size-8],
+      [size-7,8],[size-6,8],[size-5,8],[size-4,8],[size-3,8],[size-2,8],[size-1,8]
+    ];
+
+    for (let i = 0; i < 15; i++) {
+      const bit = !!((formatBits >> (14 - i)) & 1);
+      const [r1, c1] = formatPositions1[i];
+      grid[r1][c1] = bit;
+      const [r2, c2] = formatPositions2[i];
+      grid[r2][c2] = bit;
+    }
+  }
+
+  // ====== SHARE MODAL ======
+
+  function showShareModal() {
+    const modal = document.getElementById('share-modal');
+    if (!modal) return;
+
+    const link = generateShareLink();
+    const linkInput = document.getElementById('share-link');
+    const copyBtn = document.getElementById('share-copy');
+    const qrToggle = document.getElementById('share-qr-toggle');
+    const qrContainer = document.getElementById('share-qr-container');
+    const qrCanvas = document.getElementById('share-qr-canvas');
+    const closeBtn = document.getElementById('share-close');
+
+    linkInput.value = link;
+
+    // Select all on click
+    linkInput.addEventListener('click', () => linkInput.select());
+
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText(link);
+      copyBtn.textContent = '\u2705 Kopiert!';
+      setTimeout(() => { copyBtn.textContent = '\u{1F4CB} Link kopieren'; }, 2000);
+    });
+
+    let qrRendered = false;
+    qrToggle.addEventListener('click', () => {
+      if (qrContainer.style.display === 'none') {
+        qrContainer.style.display = 'flex';
+        qrToggle.textContent = 'QR-Code ausblenden';
+        if (!qrRendered) {
+          renderQRCode(qrCanvas, link);
+          qrRendered = true;
+        }
+      } else {
+        qrContainer.style.display = 'none';
+        qrToggle.textContent = 'QR-Code anzeigen';
+      }
+    });
+
+    closeBtn.addEventListener('click', () => {
+      modal.style.display = 'none';
+    });
+
+    modal.style.display = 'flex';
+  }
+
   // ====== INIT: Determine which flow to use ======
 
   async function init() {
+    // Check for fragment URL (#room=...&key=...)
+    const fragmentParams = parseFragmentParams();
+    if (fragmentParams) {
+      roomId = fragmentParams.room;
+      localStorage.setItem('nostr_room', roomId);
+      if (fragmentParams.key) {
+        NostrCrypto.setRoomPassword(fragmentParams.key);
+      }
+      // Remove fragment from URL (don't leak to server/history)
+      history.replaceState(null, '', window.location.pathname);
+    }
+
     const savedRoom = localStorage.getItem('nostr_room');
     if (savedRoom) roomId = savedRoom;
 
@@ -614,6 +1034,7 @@ const App = (() => {
     setupVoiceControls();
     setupSettings();
     setupServerSettings();
+    setupShareButton();
 
     // Switch to default channel
     NostrChat.switchChannel('allgemein');
@@ -927,6 +1348,20 @@ const App = (() => {
       updateServerHeader();
       serverModal.style.display = 'none';
     });
+  }
+
+  function setupShareButton() {
+    // Add share button to chat header
+    const chatHeader = document.querySelector('.chat-header');
+    if (chatHeader && !document.getElementById('btn-share')) {
+      const shareBtn = document.createElement('button');
+      shareBtn.id = 'btn-share';
+      shareBtn.className = 'btn-icon';
+      shareBtn.title = 'Einladungslink teilen';
+      shareBtn.textContent = '\u{1F517}';
+      shareBtn.addEventListener('click', showShareModal);
+      chatHeader.appendChild(shareBtn);
+    }
   }
 
   return { init };

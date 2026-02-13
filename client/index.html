@@ -268,6 +268,31 @@
     </div>
   </div>
 
+  <!-- Share Link Modal -->
+  <div id="share-modal" class="modal" style="display: none;">
+    <div class="modal-content setup-modal-content">
+      <h2>&#128279; Raum erstellt!</h2>
+      <p class="subtitle">Teile diesen Link mit deinen Freunden:</p>
+
+      <div class="form-group">
+        <input type="text" id="share-link" class="share-link-input" readonly>
+      </div>
+
+      <div class="share-actions">
+        <button id="share-copy" class="btn-primary">&#128203; Link kopieren</button>
+        <button id="share-qr-toggle" class="btn-secondary">QR-Code anzeigen</button>
+      </div>
+
+      <div id="share-qr-container" class="share-qr-container" style="display:none;">
+        <canvas id="share-qr-canvas" width="200" height="200"></canvas>
+      </div>
+
+      <p class="share-hint">Nur Personen mit diesem Link koennen beitreten.</p>
+
+      <button id="share-close" class="btn-secondary" style="margin-top:12px;">Schliessen</button>
+    </div>
+  </div>
+
   <!-- Main App Layout -->
   <div id="app" class="app-container">
     <!-- Left Sidebar: Channels -->

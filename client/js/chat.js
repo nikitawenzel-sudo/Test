@@ -81,15 +81,25 @@ const NostrChat = (() => {
       ? `<img class="avatar-img" src="${avatar}">`
       : name.charAt(0).toUpperCase();
 
-    const verifiedBadge = isVerified
-      ? '<span class="verified-badge" title="Identitaet verifiziert">&#10003;</span>'
-      : '<span class="unverified-badge" title="Nicht verifiziert">?</span>';
+    const manuallyVerified = NostrCrypto.isManuallyVerified(pubkey);
+    let verifiedBadge;
+    if (manuallyVerified) {
+      verifiedBadge = '<span class="verified-badge manual" title="Manuell verifiziert (Emoji-Check)">&#9989;</span>';
+    } else if (isVerified) {
+      verifiedBadge = '<span class="verified-badge" title="Automatisch verifiziert (Challenge-Response)">&#129302;</span>';
+    } else {
+      verifiedBadge = '<span class="unverified-badge" title="Nicht verifiziert">&#9888;&#65039;</span>';
+    }
 
     userItem.innerHTML = `
       <div class="user-avatar-small">${avatarContent}</div>
       <span class="user-name">${name}</span>
       ${verifiedBadge}
     `;
+
+    // Make clickable for emoji verification
+    userItem.style.cursor = 'pointer';
+    userItem.onclick = () => showEmojiVerification(pubkey, name);
   }
 
   function removeOnlineUser(pubkey) {
@@ -97,6 +107,60 @@ const NostrChat = (() => {
     if (!onlineList) return;
     const item = onlineList.querySelector(`.user-item[data-pubkey="${pubkey}"]`);
     if (item) item.remove();
+  }
+
+  // ====== EMOJI VERIFICATION MODAL ======
+
+  function showEmojiVerification(pubkey, nickname) {
+    if (!keyPair || pubkey === keyPair.publicKey) return;
+
+    const modal = document.getElementById('emoji-verify-modal');
+    if (!modal) return;
+
+    const nameEl = document.getElementById('emoji-verify-name');
+    const fpEl = document.getElementById('emoji-verify-fingerprint');
+    const pubkeyEl = document.getElementById('emoji-verify-pubkey');
+    const confirmBtn = document.getElementById('emoji-verify-confirm');
+    const denyBtn = document.getElementById('emoji-verify-deny');
+    const closeBtn = document.getElementById('emoji-verify-close');
+    const statusEl = document.getElementById('emoji-verify-status');
+
+    nameEl.textContent = nickname || NostrCrypto.shortenPubkey(pubkey);
+    fpEl.textContent = NostrCrypto.emojiFingerprint(keyPair.publicKey, pubkey);
+    pubkeyEl.textContent = pubkey;
+    statusEl.style.display = 'none';
+
+    // Reset buttons
+    confirmBtn.disabled = false;
+    denyBtn.disabled = false;
+
+    const cleanup = () => { modal.style.display = 'none'; };
+
+    confirmBtn.onclick = () => {
+      NostrCrypto.setManuallyVerified(pubkey, true);
+      statusEl.className = 'emoji-verify-status verified';
+      statusEl.textContent = '\u2705 Peer als vertrauenswuerdig markiert';
+      statusEl.style.display = 'block';
+      confirmBtn.disabled = true;
+      denyBtn.disabled = true;
+      // Update peer list display
+      updateOnlineUser(pubkey, true);
+    };
+
+    denyBtn.onclick = () => {
+      NostrCrypto.setManuallyVerified(pubkey, false);
+      statusEl.className = 'emoji-verify-status untrusted';
+      statusEl.textContent = '\u26A0\uFE0F WARNUNG: Peer als nicht vertrauenswuerdig markiert!';
+      statusEl.style.display = 'block';
+      confirmBtn.disabled = true;
+      denyBtn.disabled = true;
+      Toast.show('warning', 'Nicht verifiziert', nickname + ' konnte nicht verifiziert werden. Vorsicht bei sensiblen Nachrichten.');
+      updateOnlineUser(pubkey, false);
+    };
+
+    closeBtn.onclick = cleanup;
+
+    modal.style.display = 'flex';
   }
 
   function getDisplayName(pubkey) {

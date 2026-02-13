@@ -1057,6 +1057,53 @@ html, body {
   color: var(--header-primary);
 }
 
+/* ====== Emoji Verification ====== */
+
+.emoji-fingerprint {
+  font-size: 32px;
+  text-align: center;
+  letter-spacing: 6px;
+  padding: 16px;
+  background: var(--bg-tertiary);
+  border-radius: var(--border-radius);
+  margin: 12px 0;
+  line-height: 1.6;
+}
+
+.emoji-verify-hint {
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.emoji-verify-pubkey {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  word-break: break-all;
+  margin-bottom: 12px;
+}
+
+.emoji-verify-status {
+  text-align: center;
+  padding: 8px;
+  border-radius: 4px;
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.emoji-verify-status.verified {
+  background: rgba(59, 165, 92, 0.2);
+  color: var(--green);
+}
+
+.emoji-verify-status.untrusted {
+  background: rgba(237, 66, 69, 0.2);
+  color: var(--red);
+}
+
 /* ====== Room Status Bar ====== */
 
 .room-status-bar {

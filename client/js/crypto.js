@@ -371,6 +371,46 @@ const NostrCrypto = (() => {
     return { privateKey: privateKeyHex, publicKey };
   }
 
+  // ====== EMOJI FINGERPRINT (Peer Verification) ======
+
+  const EMOJI_SET = [
+    '\u{1F30A}','\u{1F3B8}','\u{1F98A}','\u{1F319}','\u{1F3AF}','\u{1F355}','\u{1F52E}','\u{1F3EA}',
+    '\u{1F33A}','\u{1F98B}','\u{1F3A8}','\u{1F308}','\u{1F344}','\u{1F3B2}','\u{1F989}','\u{1F335}',
+    '\u{1F3AD}','\u{1F98E}','\u{1F33B}','\u{1F3B5}','\u{1F991}','\u{1F338}','\u{1F3A1}','\u{1F99C}',
+    '\u{1F341}','\u{1F3BA}','\u{1F99A}','\u{1F30B}','\u{1F3A0}','\u{1F9A9}','\u{1F33F}','\u{1F3B6}',
+    '\u{1F419}','\u{1F3BB}','\u{1F994}','\u{1F334}','\u{1F3B3}','\u{1F41D}','\u{1F33D}','\u{1F3A4}',
+    '\u{1F980}','\u{1F330}','\u{1F3B9}','\u{1F40B}','\u{1F336}','\u{1F3A7}','\u{1F996}','\u{1F33E}',
+    '\u{1F40C}','\u{1F3BC}','\u{1F988}','\u{1F332}','\u{1F3AA}','\u{1F422}','\u{1F340}','\u{1F3AF}',
+    '\u{1F985}','\u{1F30A}','\u{1F3AE}','\u{1F433}','\u{1F342}','\u{1F3B7}','\u{1F9A9}','\u{1F335}'
+  ];
+
+  function emojiFingerprint(pubkey1, pubkey2) {
+    // Sort both keys so both sides see the same result
+    const sorted = [pubkey1, pubkey2].sort();
+    const combined = sorted[0] + sorted[1];
+    const hash = getHashes().sha256(new TextEncoder().encode(combined));
+    return Array.from(hash.slice(0, 8))
+      .map(b => EMOJI_SET[b % EMOJI_SET.length])
+      .join(' ');
+  }
+
+  // Load manually verified peers from localStorage
+  function getManuallyVerifiedPeers() {
+    try {
+      return JSON.parse(localStorage.getItem('campfire-verified-peers') || '{}');
+    } catch (e) { return {}; }
+  }
+
+  function setManuallyVerified(pubkey, verified) {
+    const peers = getManuallyVerifiedPeers();
+    peers[pubkey] = verified;
+    localStorage.setItem('campfire-verified-peers', JSON.stringify(peers));
+  }
+
+  function isManuallyVerified(pubkey) {
+    return getManuallyVerifiedPeers()[pubkey] === true;
+  }
+
   // Hash identity password for master key derivation (SHA-256 → hex)
   async function hashPasswordForMasterKey(password) {
     const encoder = new TextEncoder();
@@ -480,6 +520,11 @@ const NostrCrypto = (() => {
     getStoredPubkey,
     getPasswordStrength,
     hashPasswordForMasterKey,
+    // Emoji Verification
+    emojiFingerprint,
+    getManuallyVerifiedPeers,
+    setManuallyVerified,
+    isManuallyVerified,
     // Recovery Code
     generateRecoveryCode,
     recoverFromCode,

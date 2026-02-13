@@ -34,6 +34,7 @@ const P2P = (() => {
   let voiceStreamCallbacks = [];
   let screenStreamCallbacks = [];
   let streamRemovedCallbacks = [];
+  let chatActionCallbacks = [];
 
   // Track connected peer count
   let peerCount = 0;
@@ -125,14 +126,21 @@ const P2P = (() => {
 
     // ====== AUTO KEY ROTATION ======
 
-    // When Ratchet rotates our sender key, distribute to all verified peers
+    // When Ratchet rotates our sender key, distribute to all verified peers via Gossip
     Ratchet.onRotation(async (reason) => {
       console.log('Distributing rotated sender key to', verifiedPeers.size, 'verified peers. Reason:', reason);
       for (const [peerId, info] of peers.entries()) {
         if (info.verified && info.pubkey) {
           try {
             const senderKeyMsg = await Ratchet.getSenderKeyForPeer(info.pubkey);
-            sendSenderKey(JSON.stringify(senderKeyMsg), peerId);
+            // Use Gossip with target field so only the target peer processes it
+            Gossip.broadcast({
+              type: 'sender-key',
+              target: info.pubkey,
+              pubkey: senderKeyMsg.pubkey,
+              wrappedKey: senderKeyMsg.wrappedKey,
+              chainIndex: senderKeyMsg.chainIndex
+            }, keyPair.publicKey);
           } catch (e) {
             console.error('Failed to distribute rotated key to', peerId, e);
           }
@@ -222,21 +230,56 @@ const P2P = (() => {
       }
     });
 
-    // Apply incoming Yjs updates
+    // Apply incoming Yjs updates (direct - for initial state sync response)
     room._recvYjsUpdate((data, peerId) => {
       try {
         const update = new Uint8Array(data);
-        window.Yjs.applyUpdate(ydoc, update);
+        window.Yjs.applyUpdate(ydoc, update, 'remote');
       } catch (e) {
         console.error('Yjs update error:', e);
       }
     });
 
-    // Broadcast local Yjs changes to all peers
-    ydoc.on('update', (update, origin) => {
-      if (origin !== 'remote' && room && peerCount > 0) {
-        sendYjsUpdate(update);
+    // Register Gossip handler for Yjs incremental updates
+    Gossip.onMessage('yjs-update', (payload) => {
+      try {
+        const update = new Uint8Array(payload.data);
+        window.Yjs.applyUpdate(ydoc, update, 'remote');
+      } catch (e) {
+        console.error('Gossip yjs-update error:', e);
       }
+    });
+
+    // Register Gossip handler for chat messages (real-time typing, etc.)
+    Gossip.onMessage('chat-msg', (payload) => {
+      // Forward to chat action callbacks
+      try {
+        chatActionCallbacks.forEach(cb => cb(payload.data, payload.origin));
+      } catch (e) {
+        console.error('Gossip chat-msg error:', e);
+      }
+    });
+
+    // Register Gossip handler for sender keys (with target field)
+    Gossip.onMessage('sender-key', async (payload) => {
+      try {
+        // Only process if we are the target
+        if (payload.target && payload.target !== keyPair.publicKey) return;
+        await Ratchet.receiveSenderKey(payload.pubkey, payload.wrappedKey, payload.chainIndex);
+      } catch (e) {
+        console.error('Gossip sender-key error:', e);
+      }
+    });
+
+    // Broadcast local Yjs changes via Gossip (incremental updates)
+    ydoc.on('update', (update, origin) => {
+      if (origin === 'remote' || origin === 'encrypted-persistence') return;
+      if (!room || peerCount === 0) return;
+      // Send via Gossip for multi-hop distribution
+      Gossip.broadcast({
+        type: 'yjs-update',
+        data: Array.from(update)
+      }, keyPair.publicKey);
     });
 
     // ====== METADATA EXCHANGE ======
@@ -415,10 +458,14 @@ const P2P = (() => {
     room.removeStream(stream, metadata);
   }
 
-  // Send a chat action (for real-time typing, etc.)
+  // Send a chat action via Gossip (for real-time typing, etc.)
   function sendChatAction(data) {
-    if (!room || !sendChat) return;
-    sendChat(JSON.stringify(data));
+    if (!room) return;
+    Gossip.broadcast({
+      type: 'chat-msg',
+      data: data,
+      origin: keyPair.publicKey
+    }, keyPair.publicKey);
   }
 
   // Resolve peerId to pubkey
@@ -483,6 +530,7 @@ const P2P = (() => {
   function onScreenStream(cb) { screenStreamCallbacks.push(cb); }
   function onStreamRemoved(cb) { streamRemovedCallbacks.push(cb); }
   function onChatAction(cb) {
+    chatActionCallbacks.push(cb);
     if (room && room._recvChat) {
       room._recvChat((data, peerId) => {
         try {

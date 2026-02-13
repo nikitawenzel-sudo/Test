@@ -67,7 +67,7 @@ const P2P = (() => {
 
     // Join Trystero room via NOSTR relays for signaling
     const config = {
-      appId: 'nostr-discord-p2p-' + roomId,
+      appId: NostrCrypto.bytesToHex(window.nobleHashes.sha256(new TextEncoder().encode('campfire-v1-' + roomId))).slice(0, 16),
       relayUrls: [
         'wss://relay.damus.io',
         'wss://nos.lol',

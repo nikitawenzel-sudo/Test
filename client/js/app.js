@@ -999,6 +999,11 @@ const App = (() => {
       NostrChat.setLocalAvatar(keyPair.publicKey, myAvatar);
     }
 
+    // Restore expert mode
+    if (localStorage.getItem('campfire-expert-mode') === '1') {
+      document.body.classList.add('expert-mode');
+    }
+
     // Connect to P2P room (passwordHash strengthens IndexedDB master key)
     updateConnectionStatus('connecting');
     try {
@@ -1236,12 +1241,40 @@ const App = (() => {
 
       setupAvatarUpload(settingsAvatarUpload, settingsAvatarInput, settingsAvatarPreview);
 
+      // Expert mode toggle
+      const expertToggle = document.getElementById('settings-expert-mode');
+      if (expertToggle) {
+        expertToggle.checked = localStorage.getItem('campfire-expert-mode') === '1';
+        expertToggle.addEventListener('change', () => {
+          if (expertToggle.checked) {
+            document.body.classList.add('expert-mode');
+            localStorage.setItem('campfire-expert-mode', '1');
+          } else {
+            document.body.classList.remove('expert-mode');
+            localStorage.removeItem('campfire-expert-mode');
+          }
+        });
+      }
+
       settingsBtn.addEventListener('click', () => {
         document.getElementById('settings-nickname').value = NostrCrypto.getNickname() || '';
         document.getElementById('settings-room').value = localStorage.getItem('nostr_room') || roomId;
         document.getElementById('settings-password').value = NostrCrypto.getRoomPassword() || '';
         document.getElementById('settings-pubkey').textContent = keyPair.publicKey;
-        document.getElementById('settings-privkey').textContent = '••••••••••••••••';
+        document.getElementById('settings-privkey').textContent = '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022';
+
+        // Update tech details
+        const techEl = document.getElementById('settings-tech-details');
+        if (techEl) {
+          const ratchetInfo = typeof Ratchet !== 'undefined' ? `Chain Index: ${Ratchet.getChainIndex()}\nRotation Count: ${Ratchet.getRotationCount()}` : 'N/A';
+          const gossipInfo = typeof Gossip !== 'undefined' ? JSON.stringify(Gossip.getStats(), null, 2) : 'N/A';
+          const peerMgrInfo = typeof PeerManager !== 'undefined' ? JSON.stringify(PeerManager.getStats(), null, 2) : 'N/A';
+          techEl.textContent = `=== Forward Secrecy ===\n${ratchetInfo}\n\n=== Gossip ===\n${gossipInfo}\n\n=== Peer Manager ===\n${peerMgrInfo}`;
+        }
+
+        if (expertToggle) {
+          expertToggle.checked = localStorage.getItem('campfire-expert-mode') === '1';
+        }
 
         const currentAvatar = NostrCrypto.getAvatar();
         if (currentAvatar) {

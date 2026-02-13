@@ -98,26 +98,39 @@
       </div>
 
       <div class="form-group">
+        <label class="toggle-label">
+          <input type="checkbox" id="settings-expert-mode">
+          Experten-Modus
+        </label>
+        <small>Zeigt technische Details wie Public Keys, Ratchet-Status und Gossip-Statistiken.</small>
+      </div>
+
+      <div class="form-group expert-only">
         <label>Public Key</label>
         <div class="key-display">
           <code id="settings-pubkey"></code>
-          <button id="settings-copy-pubkey" class="btn-small">📋 Kopieren</button>
+          <button id="settings-copy-pubkey" class="btn-small">&#128203; Kopieren</button>
         </div>
       </div>
 
-      <div class="form-group">
+      <div class="form-group expert-only">
         <label>Private Key</label>
         <div class="key-display">
           <code id="settings-privkey">••••••••••••••••</code>
-          <button id="settings-show-privkey" class="btn-small">👁️ Anzeigen</button>
+          <button id="settings-show-privkey" class="btn-small">&#128065;&#65039; Anzeigen</button>
         </div>
-        <small>⚠️ Niemals teilen! Dies ist deine Identität.</small>
+        <small>Niemals teilen! Dies ist deine Identitaet.</small>
       </div>
 
-      <div class="form-group">
+      <div class="form-group expert-only">
         <label>Notfall-Code</label>
         <button id="settings-show-recovery" class="btn-small">&#128737;&#65039; Notfall-Code anzeigen</button>
         <small>Zeigt deinen Recovery-Code nach Passwort-Bestaetigung.</small>
+      </div>
+
+      <div class="form-group expert-only">
+        <label>Technische Details</label>
+        <div id="settings-tech-details" class="tech-details"></div>
       </div>
 
       <div class="modal-actions">

@@ -24,6 +24,7 @@ async function loadScript(src) {
 
 try {
   await loadScript('js/noble-loader.js');
+  await loadScript('js/toast.js');
   await loadScript('js/crypto.js');
   await loadScript('js/encrypted-persistence.js');
   await loadScript('js/ratchet.js');

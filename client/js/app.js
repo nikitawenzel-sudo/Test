@@ -1013,6 +1013,7 @@ const App = (() => {
     } catch (e) {
       console.error('P2P connection failed:', e);
       updateConnectionStatus('disconnected');
+      Toast.showByCode('webrtc-failed');
     }
 
     // Update status on peer changes
@@ -1293,7 +1294,9 @@ const App = (() => {
 
         if (newRoom && newRoom !== roomId) {
           localStorage.setItem('nostr_room', newRoom);
-          alert('Room-ID geaendert. Bitte Seite neu laden.');
+          Toast.show('info', 'Room-ID geaendert', 'Bitte Seite neu laden.', {
+            label: 'Neu laden', fn: () => location.reload()
+          });
         }
 
         settingsModal.style.display = 'none';

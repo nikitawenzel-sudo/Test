@@ -87,7 +87,7 @@ const P2P = (() => {
     [sendChallenge, room._recvChallenge] = room.makeAction('auth-challenge');
     [sendChallengeResp, room._recvChallengeResp] = room.makeAction('auth-resp');
 
-    // Setup sender key exchange action
+    // Setup sender key exchange action (kept direct for ECDH-wrapped keys)
     let recvSenderKey;
     [sendSenderKey, recvSenderKey] = room.makeAction('sender-key');
 
@@ -98,6 +98,28 @@ const P2P = (() => {
         await Ratchet.receiveSenderKey(msg.pubkey, msg.wrappedKey, msg.chainIndex);
       } catch (e) {
         console.error('Sender key receive error:', e);
+      }
+    });
+
+    // Setup Gossip action
+    let sendGossip, recvGossip;
+    [sendGossip, recvGossip] = room.makeAction('gossip-msg');
+    Gossip.setSendFunction(sendGossip);
+
+    // Handle incoming gossip messages
+    recvGossip((data, peerId) => {
+      try {
+        const msg = JSON.parse(typeof data === 'string' ? data : new TextDecoder().decode(new Uint8Array(data)));
+        const payload = Gossip.handleIncoming(msg, peerId);
+        if (!payload) return; // Duplicate or expired
+
+        // Route payload to appropriate handler
+        const handler = Gossip.getHandler(payload.type);
+        if (handler) {
+          handler(payload, peerId);
+        }
+      } catch (e) {
+        console.error('Gossip receive error:', e);
       }
     });
 
@@ -470,6 +492,17 @@ const P2P = (() => {
     }
   }
 
+  // Broadcast a payload via Gossip protocol
+  function gossipBroadcast(payload) {
+    if (!room) return;
+    Gossip.broadcast(payload, keyPair?.publicKey || 'local');
+  }
+
+  // Register a handler for a gossip message type
+  function onGossipMessage(type, handler) {
+    Gossip.onMessage(type, handler);
+  }
+
   function disconnect() {
     PeerManager.stop();
     if (room) {
@@ -502,6 +535,8 @@ const P2P = (() => {
     addStream,
     removeStream,
     sendChatAction,
+    gossipBroadcast,
+    onGossipMessage,
     getPubkeyForPeer,
     getPeerIdForPubkey,
     getPeerInfo,

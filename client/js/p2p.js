@@ -59,6 +59,9 @@ const P2P = (() => {
     // Initialize Ratchet for forward secrecy
     Ratchet.init(keyPair, provider);
     await Ratchet.restoreState();
+    // Fresh sender key on rejoin (old peers don't get new key)
+    await Ratchet.rotateSenderKey();
+    Ratchet.startRotationTimer();
 
     // Join Trystero room via NOSTR relays for signaling
     const config = {
@@ -94,6 +97,23 @@ const P2P = (() => {
         await Ratchet.receiveSenderKey(msg.pubkey, msg.wrappedKey, msg.chainIndex);
       } catch (e) {
         console.error('Sender key receive error:', e);
+      }
+    });
+
+    // ====== AUTO KEY ROTATION ======
+
+    // When Ratchet rotates our sender key, distribute to all verified peers
+    Ratchet.onRotation(async (reason) => {
+      console.log('Distributing rotated sender key to', verifiedPeers.size, 'verified peers. Reason:', reason);
+      for (const [peerId, info] of peers.entries()) {
+        if (info.verified && info.pubkey) {
+          try {
+            const senderKeyMsg = await Ratchet.getSenderKeyForPeer(info.pubkey);
+            sendSenderKey(JSON.stringify(senderKeyMsg), peerId);
+          } catch (e) {
+            console.error('Failed to distribute rotated key to', peerId, e);
+          }
+        }
       }
     });
 
@@ -267,10 +287,12 @@ const P2P = (() => {
 
     // Handle peer leave
     room.onPeerLeave(peerId => {
+      const peerInfo = peers.get(peerId);
+      const leavingPubkey = peerInfo?.pubkey;
+
       peerCount = Math.max(0, peerCount - 1);
       console.log('Peer left:', peerId, '(total:', peerCount, ')');
 
-      const peerInfo = peers.get(peerId);
       if (peerInfo) {
         onlineUsers.delete(peerInfo.pubkey);
       }
@@ -286,6 +308,17 @@ const P2P = (() => {
       peerLeaveCallbacks.forEach(cb => cb(peerId, peerInfo));
       streamRemovedCallbacks.forEach(cb => cb(peerId));
       _updateStatus();
+
+      // Debounced key rotation on peer leave (2s delay for reconnect grace)
+      if (leavingPubkey) {
+        setTimeout(async () => {
+          // Check if the peer came back (same pubkey, possibly different peerId)
+          if (!onlineUsers.has(leavingPubkey) && peerCount > 0) {
+            // Peer is still gone, rotate so they can't decrypt future messages
+            await Ratchet.triggerRotation('peer-leave');
+          }
+        }, 2000);
+      }
     });
 
     // Handle incoming streams (voice + screen)

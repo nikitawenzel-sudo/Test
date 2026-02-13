@@ -12,6 +12,14 @@ const Ratchet = (() => {
   let persistence = null;      // EncryptedPersistence provider for saving state
   const MAX_SKIP = 500;        // Max messages to skip ahead (DoS protection)
 
+  // Auto-rotation state
+  const ROTATION_MSG_THRESHOLD = 100;
+  const ROTATION_TIME_MS = 3600000; // 1 hour
+  let messagesSinceRotation = 0;
+  let rotationTimer = null;
+  let rotationCount = 0;
+  let rotationCallbacks = [];
+
   function bytesToHex(bytes) {
     return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
   }
@@ -228,10 +236,16 @@ const Ratchet = (() => {
     // Ratchet forward: delete old key, store new
     mySenderKey = nextChainKey;
     myChainIndex++;
+    messagesSinceRotation++;
 
     // Persist state periodically
     if (myChainIndex % 10 === 0) {
       saveState(); // fire-and-forget
+    }
+
+    // Auto-rotate after message threshold
+    if (messagesSinceRotation >= ROTATION_MSG_THRESHOLD) {
+      triggerRotation('message-count');
     }
 
     return {
@@ -320,9 +334,43 @@ const Ratchet = (() => {
   async function rotateSenderKey() {
     mySenderKey = crypto.getRandomValues(new Uint8Array(32));
     myChainIndex = 0;
+    messagesSinceRotation = 0;
     await saveState();
-    console.log('Sender key rotated');
+    console.log('Sender key rotated (total rotations:', rotationCount, ')');
     return true;
+  }
+
+  // Trigger rotation and notify listeners (p2p.js distributes new keys)
+  async function triggerRotation(reason) {
+    await rotateSenderKey();
+    rotationCount++;
+    resetRotationTimer();
+    console.log('Key rotation triggered:', reason);
+    rotationCallbacks.forEach(cb => cb(reason));
+  }
+
+  // Start the 1-hour rotation timer
+  function startRotationTimer() {
+    clearTimeout(rotationTimer);
+    rotationTimer = setTimeout(() => {
+      triggerRotation('time');
+    }, ROTATION_TIME_MS);
+  }
+
+  // Reset the timer (called after rotation)
+  function resetRotationTimer() {
+    messagesSinceRotation = 0;
+    startRotationTimer();
+  }
+
+  // Register callback for rotation events
+  function onRotation(cb) {
+    rotationCallbacks.push(cb);
+  }
+
+  // Get total rotation count (for expert mode UI)
+  function getRotationCount() {
+    return rotationCount;
   }
 
   return {
@@ -335,6 +383,10 @@ const Ratchet = (() => {
     decrypt,
     hasSenderKey,
     getChainIndex,
-    rotateSenderKey
+    rotateSenderKey,
+    triggerRotation,
+    startRotationTimer,
+    onRotation,
+    getRotationCount
   };
 })();

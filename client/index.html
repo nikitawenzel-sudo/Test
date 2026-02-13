@@ -34,6 +34,12 @@
       </div>
 
       <div class="form-group">
+        <label for="setup-password">Room-Passwort (E2E-Verschluesselung)</label>
+        <input type="password" id="setup-password" placeholder="Gemeinsames Passwort...">
+        <small>&#128274; Alle im Raum brauchen das gleiche Passwort. Leer = kein E2E.</small>
+      </div>
+
+      <div class="form-group">
         <label for="setup-import-key">Private Key importieren (optional)</label>
         <input type="text" id="setup-import-key" placeholder="64 Zeichen Hex-Key...">
         <small>Leer lassen = neuen Key generieren</small>
@@ -65,6 +71,12 @@
       <div class="form-group">
         <label for="settings-room">Room-ID</label>
         <input type="text" id="settings-room">
+      </div>
+
+      <div class="form-group">
+        <label for="settings-password">Room-Passwort (E2E)</label>
+        <input type="password" id="settings-password" placeholder="Leer = kein E2E">
+        <small>&#128274; Aenderung wird sofort aktiv</small>
       </div>
 
       <div class="form-group">
@@ -117,6 +129,24 @@
     </div>
   </div>
 
+  <!-- Password Prompt Modal (shown on reload when password is in sessionStorage) -->
+  <div id="password-modal" class="modal" style="display: none;">
+    <div class="modal-content setup-modal-content">
+      <h2>&#128274; Room-Passwort</h2>
+      <p class="subtitle">Passwort eingeben fuer E2E-Verschluesselung</p>
+
+      <div class="form-group">
+        <label for="prompt-password">Passwort</label>
+        <input type="password" id="prompt-password" placeholder="Room-Passwort..." autofocus>
+      </div>
+
+      <div class="modal-actions">
+        <button id="prompt-unlock" class="btn-primary">&#128274; Entsperren</button>
+        <button id="prompt-skip" class="btn-secondary">Ohne E2E fortfahren</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Main App Layout -->
   <div id="app" class="app-container">
     <!-- Left Sidebar: Channels -->
@@ -127,6 +157,7 @@
           <h2 id="server-name">NOSTR Discord</h2>
         </div>
         <span id="connection-status" class="status-indicator disconnected">🔴 Getrennt</span>
+        <span id="encryption-status" class="encryption-indicator unencrypted" title="Kein Room-Passwort">🔓 Klartext</span>
       </div>
 
       <div id="channel-list" class="channel-list">

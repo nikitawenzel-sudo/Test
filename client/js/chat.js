@@ -1,19 +1,18 @@
-// chat.js - Text Chat Logic (P2P / Yjs CRDT)
+// chat.js - Text Chat Logic (P2P / Yjs CRDT + E2E Encryption + Schnorr Signatures)
 
 const NostrChat = (() => {
   let currentChannel = 'allgemein';
   let keyPair = null;
-  let renderedMessages = new Set(); // Track rendered message IDs to avoid duplicates
-  let nicknameCache = {}; // pubkey -> nickname
-  let avatarCache = {}; // pubkey -> avatar data URL
-  let observer = null; // Current Yjs observer
+  let renderedMessages = new Set();
+  let nicknameCache = {};
+  let avatarCache = {};
+  let observer = null;
 
   const DEFAULT_CHANNELS = ['allgemein', 'gaming', 'random', 'musik', 'dev'];
 
   function init(keys) {
     keyPair = keys;
 
-    // Listen for metadata updates from P2P peers
     P2P.onMetaUpdate((pubkey, meta) => {
       if (meta.nickname) {
         nicknameCache[pubkey] = meta.nickname;
@@ -22,15 +21,11 @@ const NostrChat = (() => {
         avatarCache[pubkey] = meta.avatar;
       }
       updateDisplayedUser(pubkey);
-      updateOnlineUser(pubkey);
+      updateOnlineUser(pubkey, meta.verified);
     });
 
-    // When a peer joins, add them to online list
-    P2P.onPeerJoin(peerId => {
-      // Metadata will come through onMetaUpdate
-    });
+    P2P.onPeerJoin(peerId => {});
 
-    // When a peer leaves, remove from online list
     P2P.onPeerLeave((peerId, peerInfo) => {
       if (peerInfo && peerInfo.pubkey) {
         removeOnlineUser(peerInfo.pubkey);
@@ -42,19 +37,16 @@ const NostrChat = (() => {
     const name = getDisplayName(pubkey);
     const avatar = avatarCache[pubkey];
 
-    // Update author names in chat
     document.querySelectorAll(`.msg-author[data-pubkey="${pubkey}"]`).forEach(el => {
       el.textContent = name;
     });
 
-    // Update avatars in chat messages
     document.querySelectorAll(`.message[data-pubkey="${pubkey}"] .message-avatar`).forEach(el => {
       el.innerHTML = avatar
         ? `<img class="avatar-img" src="${avatar}">`
         : name.charAt(0).toUpperCase();
     });
 
-    // Update user list (right sidebar)
     document.querySelectorAll(`.user-item[data-pubkey="${pubkey}"] .user-name`).forEach(el => {
       el.textContent = name;
     });
@@ -64,18 +56,18 @@ const NostrChat = (() => {
         : name.charAt(0).toUpperCase();
     });
 
-    // Update voice user names
     document.querySelectorAll(`.voice-user[data-pubkey="${pubkey}"] .user-name`).forEach(el => {
       el.textContent = name;
     });
   }
 
-  function updateOnlineUser(pubkey) {
+  function updateOnlineUser(pubkey, verified) {
     const onlineList = document.getElementById('online-users');
     if (!onlineList) return;
 
     const name = getDisplayName(pubkey);
     const avatar = avatarCache[pubkey];
+    const isVerified = verified || P2P.isPubkeyVerified(pubkey);
 
     let userItem = onlineList.querySelector(`.user-item[data-pubkey="${pubkey}"]`);
     if (!userItem) {
@@ -89,9 +81,14 @@ const NostrChat = (() => {
       ? `<img class="avatar-img" src="${avatar}">`
       : name.charAt(0).toUpperCase();
 
+    const verifiedBadge = isVerified
+      ? '<span class="verified-badge" title="Identitaet verifiziert">&#10003;</span>'
+      : '<span class="unverified-badge" title="Nicht verifiziert">?</span>';
+
     userItem.innerHTML = `
       <div class="user-avatar-small">${avatarContent}</div>
       <span class="user-name">${name}</span>
+      ${verifiedBadge}
     `;
   }
 
@@ -126,12 +123,10 @@ const NostrChat = (() => {
       avatarCache[keyPair.publicKey] = avatar;
     }
 
-    // Broadcast metadata to all P2P peers
     P2P.broadcastMeta();
   }
 
   function switchChannel(channel) {
-    // Remove old Yjs observer
     if (observer) {
       const oldMessages = P2P.getMessages(currentChannel);
       if (oldMessages) {
@@ -142,11 +137,9 @@ const NostrChat = (() => {
     currentChannel = channel;
     renderedMessages.clear();
 
-    // Clear chat
     const messagesEl = document.getElementById('messages');
     if (messagesEl) messagesEl.innerHTML = '';
 
-    // Update UI
     document.querySelectorAll('.channel-item').forEach(el => {
       el.classList.toggle('active', el.dataset.channel === channel);
     });
@@ -154,11 +147,10 @@ const NostrChat = (() => {
     const channelNameEl = document.getElementById('current-channel-name');
     if (channelNameEl) channelNameEl.textContent = '# ' + channel;
 
-    // Get Yjs array for this channel
     const yMessages = P2P.getMessages(channel);
     if (!yMessages) return;
 
-    // Render existing messages from Yjs
+    // Render existing messages (async - decrypt + verify)
     const existing = yMessages.toArray();
     for (const msg of existing) {
       if (!renderedMessages.has(msg.id)) {
@@ -167,10 +159,10 @@ const NostrChat = (() => {
       }
     }
 
-    // Scroll to bottom after initial render
-    if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+    if (messagesEl) {
+      setTimeout(() => { messagesEl.scrollTop = messagesEl.scrollHeight; }, 50);
+    }
 
-    // Observe new messages
     observer = (event) => {
       event.changes.added.forEach(item => {
         item.content.getContent().forEach(msg => {
@@ -184,27 +176,72 @@ const NostrChat = (() => {
     yMessages.observe(observer);
   }
 
-  function sendMessage(text) {
+  async function sendMessage(text) {
     if (!text.trim()) return;
+
+    const content = text.trim();
+    const created_at = Math.floor(Date.now() / 1000);
+
+    // Sign the plaintext message with Schnorr
+    const sig = await NostrCrypto.signMessagePayload(
+      keyPair.publicKey, created_at, currentChannel, content, keyPair.privateKey
+    );
+
+    // Encrypt the content with room key (if available)
+    const encrypted = await NostrCrypto.encryptText(content);
 
     const msg = {
       id: keyPair.publicKey.slice(0, 8) + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
       pubkey: keyPair.publicKey,
-      content: text.trim(),
       channel: currentChannel,
-      created_at: Math.floor(Date.now() / 1000)
+      created_at: created_at,
+      sig: sig // Schnorr signature over plaintext
     };
 
-    // Push to Yjs array - automatically synced to all peers
+    if (encrypted) {
+      // E2E encrypted: only ciphertext stored in CRDT
+      msg.encrypted = encrypted;
+    } else {
+      // No room password: plaintext (with signature for authenticity)
+      msg.content = content;
+    }
+
     const yMessages = P2P.getMessages(currentChannel);
     if (yMessages) {
       yMessages.push([msg]);
     }
   }
 
-  function renderMessage(msg) {
+  // Async render: decrypt + verify + display
+  async function renderMessage(msg) {
     const messagesEl = document.getElementById('messages');
     if (!messagesEl) return;
+
+    let content = null;
+    let isEncrypted = false;
+    let decryptFailed = false;
+    let sigValid = false;
+    let hasSig = !!msg.sig;
+
+    // Step 1: Decrypt if encrypted
+    if (msg.encrypted) {
+      isEncrypted = true;
+      content = await NostrCrypto.decryptText(msg.encrypted);
+      if (content === null) {
+        decryptFailed = true;
+        content = null;
+      }
+    } else if (msg.content) {
+      // Legacy plaintext message
+      content = msg.content;
+    }
+
+    // Step 2: Verify Schnorr signature
+    if (hasSig && content && !decryptFailed) {
+      sigValid = await NostrCrypto.verifyMessageSignature(
+        msg.pubkey, msg.created_at, msg.channel, content, msg.sig
+      );
+    }
 
     const isOwn = msg.pubkey === keyPair.publicKey;
     const time = new Date(msg.created_at * 1000);
@@ -217,8 +254,36 @@ const NostrChat = (() => {
       ? `<img class="avatar-img" src="${avatarUrl}">`
       : displayName.charAt(0).toUpperCase();
 
+    // Security badges
+    let badges = '';
+    if (isEncrypted && !decryptFailed) {
+      badges += '<span class="badge badge-encrypted" title="E2E verschluesselt">&#128274;</span>';
+    } else if (isEncrypted && decryptFailed) {
+      badges += '<span class="badge badge-decrypt-failed" title="Entschluesselung fehlgeschlagen - falsches Passwort?">&#128275;</span>';
+    }
+    if (hasSig && sigValid) {
+      badges += '<span class="badge badge-verified" title="Signatur verifiziert">&#10003;</span>';
+    } else if (hasSig && !sigValid && !decryptFailed) {
+      badges += '<span class="badge badge-forged" title="WARNUNG: Signatur ungueltig!">&#9888;</span>';
+    } else if (!hasSig) {
+      badges += '<span class="badge badge-unsigned" title="Nicht signiert (Legacy)">&#63;</span>';
+    }
+
+    // Display content
+    let displayContent;
+    if (decryptFailed) {
+      displayContent = '<span class="encrypted-placeholder">&#128274; Verschluesselte Nachricht (falsches Passwort?)</span>';
+    } else if (content) {
+      displayContent = formatContent(content);
+    } else {
+      displayContent = '<span class="encrypted-placeholder">&#128274; Unlesbar</span>';
+    }
+
     const msgEl = document.createElement('div');
     msgEl.className = 'message' + (isOwn ? ' own' : '');
+    if (hasSig && !sigValid && !decryptFailed) {
+      msgEl.className += ' forged-warning';
+    }
     msgEl.dataset.msgId = msg.id;
     msgEl.dataset.pubkey = msg.pubkey;
     msgEl.innerHTML = `
@@ -226,9 +291,10 @@ const NostrChat = (() => {
       <div class="message-body">
         <div class="message-header">
           <span class="msg-author" data-pubkey="${msg.pubkey}">${escapeHtml(displayName)}</span>
+          <span class="msg-badges">${badges}</span>
           <span class="msg-time" title="${dateStr}">${timeStr}</span>
         </div>
-        <div class="message-content">${formatContent(msg.content)}</div>
+        <div class="message-content">${displayContent}</div>
       </div>
     `;
 
@@ -249,7 +315,6 @@ const NostrChat = (() => {
       messagesEl.appendChild(msgEl);
     }
 
-    // Auto-scroll if near bottom
     const isNearBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 100;
     if (isNearBottom || isOwn) {
       messagesEl.scrollTop = messagesEl.scrollHeight;

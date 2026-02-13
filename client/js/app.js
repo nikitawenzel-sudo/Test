@@ -79,9 +79,44 @@ const App = (() => {
 
     if (!hasKey || !hasNick) {
       showSetupModal();
+    } else if (!NostrCrypto.getRoomPassword()) {
+      // Key exists but no password in session - show password prompt
+      showPasswordPrompt();
     } else {
       await startApp();
     }
+  }
+
+  function showPasswordPrompt() {
+    const modal = document.getElementById('password-modal');
+    if (!modal) {
+      // Fallback: start without encryption
+      startApp();
+      return;
+    }
+    modal.style.display = 'flex';
+
+    const passwordInput = document.getElementById('prompt-password');
+    const unlockBtn = document.getElementById('prompt-unlock');
+    const skipBtn = document.getElementById('prompt-skip');
+
+    unlockBtn.addEventListener('click', async () => {
+      const password = passwordInput.value.trim();
+      if (password) {
+        NostrCrypto.setRoomPassword(password);
+      }
+      modal.style.display = 'none';
+      await startApp();
+    });
+
+    skipBtn.addEventListener('click', async () => {
+      modal.style.display = 'none';
+      await startApp();
+    });
+
+    passwordInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') unlockBtn.click();
+    });
   }
 
   function showSetupModal() {
@@ -89,6 +124,7 @@ const App = (() => {
     modal.style.display = 'flex';
 
     const roomInput = document.getElementById('setup-room');
+    const passwordInput = document.getElementById('setup-password');
     const nickInput = document.getElementById('setup-nickname');
     const startBtn = document.getElementById('setup-start');
     const importKeyInput = document.getElementById('setup-import-key');
@@ -109,6 +145,12 @@ const App = (() => {
 
       roomId = roomInput.value.trim() || roomId;
       localStorage.setItem('nostr_room', roomId);
+
+      // Save room password in sessionStorage (cleared on tab close)
+      const password = passwordInput.value.trim();
+      if (password) {
+        NostrCrypto.setRoomPassword(password);
+      }
 
       const importKey = importKeyInput.value.trim();
       if (importKey && importKey.length === 64) {
@@ -144,6 +186,17 @@ const App = (() => {
 
     updateMyAvatar();
     updateServerHeader();
+
+    // Derive E2E encryption key from room password (if set)
+    const roomPassword = NostrCrypto.getRoomPassword();
+    if (roomPassword) {
+      await NostrCrypto.deriveRoomKey(roomId, roomPassword);
+      console.log('E2E encryption enabled (AES-256-GCM)');
+      updateEncryptionStatus(true);
+    } else {
+      console.warn('No room password - messages will NOT be encrypted');
+      updateEncryptionStatus(false);
+    }
 
     // Initialize P2P layer
     P2P.init(keyPair);
@@ -204,15 +257,30 @@ const App = (() => {
     if (!statusEl) return;
 
     const peerCount = P2P.getPeerCount();
+    const verifiedCount = P2P.getVerifiedCount();
 
     statusEl.className = 'status-indicator ' + status;
     const labels = {
-      connected: `🟢 P2P (${peerCount} Peer${peerCount !== 1 ? 's' : ''})`,
+      connected: `🟢 P2P (${peerCount} Peer${peerCount !== 1 ? 's' : ''}, ${verifiedCount} verifiziert)`,
       connecting: '🟡 Verbinde...',
       disconnected: '🔴 Getrennt',
       waiting: '🟡 Warte auf Peers...'
     };
     statusEl.textContent = labels[status] || status;
+  }
+
+  function updateEncryptionStatus(encrypted) {
+    const el = document.getElementById('encryption-status');
+    if (!el) return;
+    if (encrypted) {
+      el.className = 'encryption-indicator encrypted';
+      el.textContent = '🔒 E2E';
+      el.title = 'Ende-zu-Ende verschluesselt (AES-256-GCM)';
+    } else {
+      el.className = 'encryption-indicator unencrypted';
+      el.textContent = '🔓 Klartext';
+      el.title = 'WARNUNG: Kein Room-Passwort gesetzt - Nachrichten sind nicht verschluesselt!';
+    }
   }
 
   function setupChannels() {
@@ -356,6 +424,7 @@ const App = (() => {
       settingsBtn.addEventListener('click', () => {
         document.getElementById('settings-nickname').value = NostrCrypto.getNickname() || '';
         document.getElementById('settings-room').value = localStorage.getItem('nostr_room') || roomId;
+        document.getElementById('settings-password').value = NostrCrypto.getRoomPassword() || '';
         document.getElementById('settings-pubkey').textContent = keyPair.publicKey;
         document.getElementById('settings-privkey').textContent = '••••••••••••••••';
 
@@ -381,6 +450,7 @@ const App = (() => {
       document.getElementById('settings-save')?.addEventListener('click', async () => {
         const newNick = document.getElementById('settings-nickname').value.trim();
         const newRoom = document.getElementById('settings-room').value.trim();
+        const newPassword = document.getElementById('settings-password').value.trim();
 
         const newAvatar = settingsAvatarPreview.dataset.avatar;
         if (newAvatar && newAvatar !== NostrCrypto.getAvatar()) {
@@ -392,6 +462,19 @@ const App = (() => {
         if (newNick) {
           NostrChat.publishNickname(newNick);
           document.getElementById('my-nickname').textContent = newNick;
+        }
+
+        // Update room password
+        const oldPassword = NostrCrypto.getRoomPassword();
+        if (newPassword !== (oldPassword || '')) {
+          if (newPassword) {
+            NostrCrypto.setRoomPassword(newPassword);
+            await NostrCrypto.deriveRoomKey(roomId, newPassword);
+            updateEncryptionStatus(true);
+          } else {
+            NostrCrypto.setRoomPassword(null);
+            updateEncryptionStatus(false);
+          }
         }
 
         if (newRoom && newRoom !== roomId) {

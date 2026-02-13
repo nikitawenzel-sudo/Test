@@ -1,4 +1,4 @@
-// p2p.js - P2P Networking Layer (Trystero + Yjs)
+// p2p.js - P2P Networking Layer (Trystero + Yjs + Challenge-Response Auth)
 // Replaces relay.js - No server needed!
 
 const P2P = (() => {
@@ -7,7 +7,7 @@ const P2P = (() => {
   let provider = null; // y-indexeddb persistence
   let keyPair = null;
   let roomId = null;
-  let peers = new Map(); // peerId -> { pubkey, nickname, avatar }
+  let peers = new Map(); // peerId -> { pubkey, nickname, avatar, verified }
   let connectCallbacks = [];
   let disconnectCallbacks = [];
   let peerJoinCallbacks = [];
@@ -20,6 +20,12 @@ const P2P = (() => {
   let sendMeta = null;
   let sendChat = null;
   let sendNickRequest = null;
+
+  // Challenge-Response actions
+  let sendChallenge = null;
+  let sendChallengeResp = null;
+  let pendingChallenges = new Map(); // peerId -> nonce (hex)
+  let verifiedPeers = new Set(); // Set of verified peerIds
 
   // Stream handling
   let voiceStreamCallbacks = [];
@@ -71,12 +77,77 @@ const P2P = (() => {
     [sendChat, room._recvChat] = room.makeAction('chat-msg');
     [sendNickRequest, room._recvNickRequest] = room.makeAction('nick-req');
 
+    // Setup challenge-response actions
+    [sendChallenge, room._recvChallenge] = room.makeAction('auth-challenge');
+    [sendChallengeResp, room._recvChallengeResp] = room.makeAction('auth-resp');
+
+    // ====== CHALLENGE-RESPONSE PROTOCOL ======
+
+    // When we receive a challenge: sign it and send back proof
+    room._recvChallenge(async (data, peerId) => {
+      try {
+        const nonce = typeof data === 'string' ? data : new TextDecoder().decode(new Uint8Array(data));
+        // Hash the nonce (Schnorr needs 32-byte message)
+        const nonceHash = await NostrCrypto.hashNonce(nonce);
+        // Sign with our private key
+        const sig = await NostrCrypto.schnorrSign(nonceHash, keyPair.privateKey);
+        // Send back our pubkey + signature as proof
+        sendChallengeResp(JSON.stringify({
+          pubkey: keyPair.publicKey,
+          sig: sig
+        }), peerId);
+      } catch (e) {
+        console.error('Challenge response error:', e);
+      }
+    });
+
+    // When we receive a challenge response: verify the proof
+    room._recvChallengeResp(async (data, peerId) => {
+      try {
+        const resp = JSON.parse(typeof data === 'string' ? data : new TextDecoder().decode(new Uint8Array(data)));
+        const nonce = pendingChallenges.get(peerId);
+        if (!nonce) return;
+
+        // Hash the nonce the same way
+        const nonceHash = await NostrCrypto.hashNonce(nonce);
+        // Verify: does the signature match the claimed pubkey?
+        const valid = await NostrCrypto.schnorrVerify(resp.sig, nonceHash, resp.pubkey);
+
+        if (valid) {
+          verifiedPeers.add(peerId);
+          // Update peer info with VERIFIED pubkey
+          const peerInfo = peers.get(peerId);
+          if (peerInfo) {
+            peerInfo.pubkey = resp.pubkey;
+            peerInfo.verified = true;
+          }
+          console.log('Peer VERIFIED:', peerId, resp.pubkey.slice(0, 8) + '...');
+          metaUpdateCallbacks.forEach(cb => cb(resp.pubkey, {
+            pubkey: resp.pubkey,
+            nickname: peerInfo?.nickname,
+            avatar: peerInfo?.avatar,
+            verified: true
+          }));
+        } else {
+          console.warn('Peer FAILED verification:', peerId);
+          const peerInfo = peers.get(peerId);
+          if (peerInfo) {
+            peerInfo.verified = false;
+          }
+        }
+        pendingChallenges.delete(peerId);
+      } catch (e) {
+        console.error('Challenge verify error:', e);
+      }
+    });
+
+    // ====== YJS SYNC ======
+
     // Handle Yjs sync - when a new peer connects, exchange state
     room._recvYjsSync((data, peerId) => {
       try {
         const remoteVector = new Uint8Array(data);
         const update = window.Yjs.encodeStateAsUpdate(ydoc, remoteVector);
-        // Send our state diff back
         sendYjsUpdate(update, peerId);
       } catch (e) {
         console.error('Yjs sync error:', e);
@@ -100,31 +171,41 @@ const P2P = (() => {
       }
     });
 
+    // ====== METADATA EXCHANGE ======
+
     // Handle metadata exchange (pubkey, nickname, avatar)
     room._recvMeta((data, peerId) => {
       try {
         const meta = typeof data === 'string' ? JSON.parse(data) : data;
+        const existing = peers.get(peerId);
         peers.set(peerId, {
           pubkey: meta.pubkey,
           nickname: meta.nickname,
-          avatar: meta.avatar || null
+          avatar: meta.avatar || null,
+          verified: existing?.verified || false // Keep verified state
         });
         onlineUsers.set(meta.pubkey, {
           nickname: meta.nickname,
           avatar: meta.avatar || null,
           peerId: peerId,
+          verified: existing?.verified || false,
           lastSeen: Date.now()
         });
-        metaUpdateCallbacks.forEach(cb => cb(meta.pubkey, meta));
+        metaUpdateCallbacks.forEach(cb => cb(meta.pubkey, {
+          ...meta,
+          verified: existing?.verified || false
+        }));
       } catch (e) {
         console.error('Meta parse error:', e);
       }
     });
 
-    // Handle nickname requests (peer asking for our info)
+    // Handle nickname requests
     room._recvNickRequest((data, peerId) => {
       broadcastMeta();
     });
+
+    // ====== PEER MANAGEMENT ======
 
     // Handle peer join
     room.onPeerJoin(peerId => {
@@ -136,7 +217,7 @@ const P2P = (() => {
         connectCallbacks.forEach(cb => cb());
       }
 
-      // Send our metadata to the new peer
+      // Send our metadata
       const meta = {
         pubkey: keyPair.publicKey,
         nickname: NostrCrypto.getNickname() || NostrCrypto.shortenPubkey(keyPair.publicKey),
@@ -147,7 +228,12 @@ const P2P = (() => {
       // Request their metadata
       sendNickRequest('req', peerId);
 
-      // Sync Yjs state with new peer
+      // CHALLENGE: Send a random nonce for identity verification
+      const nonce = NostrCrypto.randomNonce();
+      pendingChallenges.set(peerId, nonce);
+      sendChallenge(nonce, peerId);
+
+      // Sync Yjs state
       const sv = window.Yjs.encodeStateVector(ydoc);
       sendYjsSync(sv, peerId);
 
@@ -165,6 +251,8 @@ const P2P = (() => {
         onlineUsers.delete(peerInfo.pubkey);
       }
       peers.delete(peerId);
+      verifiedPeers.delete(peerId);
+      pendingChallenges.delete(peerId);
 
       if (peerCount === 0) {
         isConnected = false;
@@ -260,6 +348,19 @@ const P2P = (() => {
     return peers.get(peerId) || null;
   }
 
+  // Check if a peer's identity is verified via challenge-response
+  function isPeerVerified(peerId) {
+    return verifiedPeers.has(peerId);
+  }
+
+  // Check if a pubkey belongs to a verified peer
+  function isPubkeyVerified(pubkey) {
+    for (const [peerId, info] of peers.entries()) {
+      if (info.pubkey === pubkey && info.verified) return true;
+    }
+    return false;
+  }
+
   // Get all online users
   function getOnlineUsers() {
     return onlineUsers;
@@ -268,6 +369,11 @@ const P2P = (() => {
   // Get peer count
   function getPeerCount() {
     return peerCount;
+  }
+
+  // Get verified peer count
+  function getVerifiedCount() {
+    return verifiedPeers.size;
   }
 
   // Connection status
@@ -309,6 +415,8 @@ const P2P = (() => {
     }
     peers.clear();
     onlineUsers.clear();
+    verifiedPeers.clear();
+    pendingChallenges.clear();
     peerCount = 0;
     isConnected = false;
   }
@@ -326,8 +434,11 @@ const P2P = (() => {
     getPubkeyForPeer,
     getPeerIdForPubkey,
     getPeerInfo,
+    isPeerVerified,
+    isPubkeyVerified,
     getOnlineUsers,
     getPeerCount,
+    getVerifiedCount,
     getStatus,
     onConnect,
     onDisconnect,
